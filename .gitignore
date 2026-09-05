@@ -1,0 +1,13 @@
+venv/
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+data/raw/
+data/processed/*
+!data/processed/.gitkeep
+submissions/*.csv
+!submissions/.gitkeep
+
+.env
+kaggle.json
