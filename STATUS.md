@@ -54,8 +54,18 @@ Last updated: **2026-09-06 10:56 Dhaka** (~37h to the 2026-09-07 23:59:59 hard d
 
 ## What's next
 
-1. Decide on the optional CatBoost blend (PLAN.md: opportunistic, only if hours allow with LightGBM already solid).
-2. Stretch goal (only after the above): second-order relationship/cluster features via `scipy.sparse.csgraph.connected_components` — not started yet, lowest priority per the council's scope-creep triage.
+1. ~~Decide on the optional CatBoost blend~~ **Done — negative result, not
+   adopted.** CatBoost (one-hot encoded categoricals, deliberately *not*
+   CatBoost's native `cat_features` — see `scripts/06_catboost_cv.py`
+   docstring for why: its default CTR handling is a per-category target
+   encoding, which is exactly what our Banned rule forbids) scored worse
+   than LightGBM on **every single fold** (−0.005 to −0.016). A blend-weight
+   sweep on the drift fold confirmed no weight beats LightGBM alone
+   (best blend +0.0004, inside the noise floor; every weight below 0.9
+   was worse). Single LightGBM stays the model — PLAN.md's original
+   "no 3-framework ensemble" leaning is now empirically confirmed, not
+   just a time-saving assumption.
+2. Stretch goal (next up): second-order relationship/cluster features via `scipy.sparse.csgraph.connected_components` — lowest priority per the council's scope-creep triage, attempted now since the core pipeline is confirmed solid and hours remain.
 3. Keep building the Kaggle Notebook version incrementally (not just at the end) given the tight ~10h post-close reproducibility window — see `TEAM_TASKS.md` task 2.
 4. Team can now also work in parallel: `TEAM_TASKS.md` has step-by-step commands for (1) reproducing the pipeline locally and (2) packaging the Kaggle Notebook.
 5. No Kaggle submission until the team says so — everything validated locally via CV in the meantime.
