@@ -288,7 +288,6 @@ group sizes, and tries a 7-day-blocked variant as the fallback.
 
 ## In flight
 
-- `react-2026-te` -- target-encoding payoff (measurement only; still banned).
 - `react-2026-drift` -- time-local percentile normalisation.
 - `react-2026-prop3` -- does propagation survive test-like entity groups.
 
@@ -298,7 +297,35 @@ so they can't drift from local source. Gotcha recorded: the API mounts
 competition data at `/kaggle/input/competitions/<slug>/`, not
 `/kaggle/input/<slug>/`.
 
-## Open decision — yours
+### Target encoding — measured, and the answer is no (`react-2026-te`)
+
+| arm | Jun25-Jul02 | Jul02-Jul08 | Jul08-Jul16 | fold2-guard | recent mean |
+|---|---|---|---|---|---|
+| A — current best, no TE | 0.7701 | **0.4943** | 0.5484 | 0.7930 | 0.6043 |
+| B — + TE (rates, counts, positives) | 0.7771 | 0.4913 | 0.5531 | 0.7977 | 0.6072 (+0.0029) |
+| C — + TE rates only | 0.7763 | 0.4917 | 0.5539 | 0.7971 | 0.6073 (+0.0031) |
+
+**Fails the acceptance rule: +0.0031 against a +0.004 bar**, and it *loses*
+on Jul02-Jul08, the hardest and most test-like window. 2/3 windows up, worst
+delta -0.0026.
+
+The model does reach for these features -- `te_dev` and `te_merch` land 3rd/4th
+by gain, above almost every behavioural feature. But `te_cust` never enters the
+top 10, and the aggregate payoff still lands under the bar. High feature
+importance and a real score gain are not the same thing; the model happily
+spends splits on a feature that is not buying accuracy on the windows that
+count.
+
+**Recommendation: do not adopt.** It is worth less than prediction propagation
+(+0.0049), which carries no reproducibility-review exposure at all. Taking the
+smaller gain *and* the "targeting specific entity IDs" risk would be a bad
+trade in both directions. The PLAN.md ban stands, now backed by a measurement
+instead of caution.
+
+This also closes the theory that target encoding explained the gap to the
+leaders. It does not.
+
+## Open decision — RESOLVED, see above
 
 **Per-entity target encoding** (`te_customer`, `te_device`, `te_merchant`:
 smoothed, past-only historical fraud rates). The one documented higher-scoring
