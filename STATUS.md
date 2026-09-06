@@ -1,6 +1,6 @@
 # REACT 2026 Datathon — Team Status Dashboard
 
-Last updated: **2026-09-06 18:30 Dhaka** · deadline **2026-09-07 23:59:59 Dhaka** (~29.5h left)
+Last updated: **2026-09-06 22:45 Dhaka** · deadline **2026-09-07 23:59:59 Dhaka** (~25.2h left)
 
 > Modeling plan and rationale: [`PLAN.md`](./PLAN.md) · Onboarding tasks: [`TEAM_TASKS.md`](./TEAM_TASKS.md)
 
@@ -322,10 +322,58 @@ strips the absolute level, which carries real signal, about as fast as it
 removes the drift. High PSI marks a feature worth *looking at*; it does not
 mark one worth normalising.
 
+### FINAL CANDIDATE (`react-2026-candidate`)
+
+Arm C + 7-day blocked customer propagation at w=0.05.
+
+```
+held-out(Jul01-15)  raw=0.5252  blended=0.5292  (+0.0040)   rounds=967
+test groups: rows/cust mean=7.5, singletons=18.6%
+blend moved 70.1% of test rows; spearman(raw, blended)=0.9526
+```
+
+`submissions/CANDIDATE_propblend_0.5292.csv`
+(md5 `d32a8f036def52c8525b32786660e44b`) -- verified: 262,648 rows, order
+matches `sample_submission.csv`, 0 NaN, range [0.000207, 0.999944].
+**Not submitted.**
+
+The +0.0040 held-out gain sits exactly where `prop3` predicted for a 15-day
+window: it measured +0.0021 on an 8-day window and +0.0046..+0.0052 on 60-day
+windows, and Jul 1-15 falls between them. Independent confirmation that the
+blocked blend behaves as modelled rather than fitting the window it was tuned
+on.
+
+Worth noting for anyone reading the artifact: top-1k overlap with arm C is only
+0.587 despite a 0.95 Spearman. A w=0.05 blend barely moves any individual
+score, but it reorders rows whose raw scores were close together -- which is
+precisely the mechanism, PR-AUC being a rank metric. It is not evidence of
+instability.
+
+## Final local scores
+
+| Configuration | Jul 1-15 tail | recent mean |
+|---|---|---|
+| Live 0.53948 submission (`lr=0.05/63`, old feats) | 0.5204 | 0.5995 |
+| Arm C (swept + Phase-3 feats, no graph) | 0.5252 | 0.6043 |
+| **Arm C + blocked propagation (final candidate)** | **0.5292** | **~0.609** |
+
+**Total local gain over what is on the leaderboard: +0.0088.**
+
+## Tonight's four levers
+
+| lever | result | verdict |
+|---|---|---|
+| Propagation, 7-day blocked, w=0.05 | +0.0040 held-out | **ADOPTED** |
+| Target encoding | +0.0031, loses the hardest window | rejected |
+| Drift normalisation | +0.0001 | rejected |
+| Ranking objectives | -0.009 | dead |
+
+One of four paid, and it only survived because `prop3` caught that the
+validation regime did not match the test window.
+
 ## In flight
 
-- `react-2026-candidate` -- final artifact: arm C + 7-day blocked customer
-  propagation at w=0.05.
+**Nothing.** All kernels complete.
 
 
 Kaggle kernels are generated from `src/` by `scripts/build_kaggle_kernel.py`,
