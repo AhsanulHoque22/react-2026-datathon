@@ -128,6 +128,77 @@ def add_trailing_window_features(df: pd.DataFrame, entity_col: str, prefix: str,
     return df
 
 
+class _UnionFind:
+    """Weighted union-find with path compression. Used instead of a single
+    static `scipy.sparse.csgraph.connected_components` call (PLAN.md's
+    originally-suggested tool): that function only answers "what are the
+    components of this *fixed* graph" -- it has no notion of point-in-time.
+    Naively running it once on the full combined graph would leak edges
+    formed by *later* transactions into early rows' features. This
+    incremental structure gives the exact per-row equivalent instead:
+    look up an entity's current component size (read), THEN add today's
+    edge (write) -- so every row's feature reflects strictly-prior edges
+    only, at row-level precision rather than a coarser daily/weekly
+    snapshot. Still the same underlying idea PLAN.md scoped (bipartite
+    connected components on customer-device / customer-merchant graphs),
+    just applied incrementally rather than as one static scipy call.
+    """
+
+    def __init__(self, n: int):
+        self.parent = list(range(n))
+        self.size = [1] * n
+
+    def find(self, x: int) -> int:
+        root = x
+        while self.parent[root] != root:
+            root = self.parent[root]
+        while self.parent[x] != root:
+            self.parent[x], x = root, self.parent[x]
+        return root
+
+    def component_size(self, x: int) -> int:
+        return self.size[self.find(x)]
+
+    def union(self, a: int, b: int):
+        ra, rb = self.find(a), self.find(b)
+        if ra == rb:
+            return
+        if self.size[ra] < self.size[rb]:
+            ra, rb = rb, ra
+        self.parent[rb] = ra
+        self.size[ra] += self.size[rb]
+
+
+def add_bipartite_component_features(df: pd.DataFrame, col_a: str, col_b: str, name: str) -> pd.DataFrame:
+    """Strictly-past component size of col_a's and col_b's node in the
+    incrementally-built col_a<->col_b bipartite graph. E.g. for
+    (customer_id, device_id): "how large is the cluster of
+    customers+devices this customer already belongs to, before this
+    transaction" and the same for the device's own prior cluster --
+    directly answers the problem description's "does this device suddenly
+    belong to many customers" / "do groups form suspicious clusters"."""
+    codes_a, uniques_a = pd.factorize(df[col_a])
+    codes_b, uniques_b = pd.factorize(df[col_b])
+    offset = len(uniques_a)
+    n_nodes = offset + len(uniques_b)
+
+    uf = _UnionFind(n_nodes)
+    size_a = np.empty(len(df), dtype="int32")
+    size_b = np.empty(len(df), dtype="int32")
+
+    a_ids = codes_a
+    b_ids = codes_b + offset
+    for i in range(len(df)):
+        a, b = a_ids[i], b_ids[i]
+        size_a[i] = uf.component_size(a)
+        size_b[i] = uf.component_size(b)
+        uf.union(a, b)
+
+    df[f"{name}_{col_a}_component_size_prior"] = size_a
+    df[f"{name}_{col_b}_component_size_prior"] = size_b
+    return df
+
+
 def build_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
@@ -152,6 +223,10 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     df = add_trailing_window_features(df, "customer_id", "cust", windows_hours=(1, 24))
     df = add_trailing_window_features(df, "merchant_id", "merch", windows_hours=(1, 24))
     df = add_trailing_window_features(df, "device_id", "dev", windows_hours=(1, 24))
+
+    # Stretch goal (PLAN.md): second-order relationship/cluster features.
+    df = add_bipartite_component_features(df, "customer_id", "device_id", "cd")
+    df = add_bipartite_component_features(df, "customer_id", "merchant_id", "cm")
 
     return df
 
