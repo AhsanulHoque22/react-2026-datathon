@@ -286,10 +286,46 @@ same-day siblings. On test it would touch 81% of rows and pool transactions a
 month apart. `react-2026-prop3` re-validates on 60-day windows with test-like
 group sizes, and tries a 7-day-blocked variant as the fallback.
 
+### Drift normalisation — rejected (`react-2026-drift`)
+
+| arm | Jun25-Jul02 | Jul02-Jul08 | Jul08-Jul16 | fold2 | recent mean |
+|---|---|---|---|---|---|
+| A — raw (current best) | 0.7701 | 0.4943 | 0.5484 | 0.7930 | 0.6043 |
+| B — raw + percentiles | 0.7720 | 0.4940 | 0.5471 | 0.7962 | 0.6044 (+0.0001) |
+| C — percentiles replacing raw | 0.7716 | 0.4941 | 0.5446 | 0.7937 | 0.6034 (-0.0008) |
+
+Both reject, 1/3 windows improved. The hypothesis -- that feature drift was
+costing us real score and re-centring against the trailing population would
+recover it -- is **wrong**.
+
+The drift itself is not in doubt. 33 of 182 numeric features have PSI > 0.25,
+and the top of the table is extreme:
+
+| feature | PSI |
+|---|---|
+| `device_type_freq_share_prior` | 9.38 |
+| `transaction_type_freq_share_prior` | 5.73 |
+| `payment_method_freq_share_prior` | 5.38 |
+| `merchant_id_nunique_customer_for_merchant_share_prior` | 5.21 |
+| `dev_history_count` | 3.52 |
+
+**Two things worth keeping from this.** First, the `*_freq_share_prior`
+features are the *most* drifted in the entire set -- and those are exactly the
+share-of-traffic encodings introduced earlier specifically to be stationary.
+That fix did not achieve stationarity, and nobody had checked.
+
+Second, and the reason the whole idea fails: much of this "drift" is
+deterministic accumulation, not regime change. `dev_history_count` and
+`*_amt_sum_prior` grow monotonically by construction, so PSI flags them
+loudly while the model already handles them fine. Converting to a percentile
+strips the absolute level, which carries real signal, about as fast as it
+removes the drift. High PSI marks a feature worth *looking at*; it does not
+mark one worth normalising.
+
 ## In flight
 
-- `react-2026-drift` -- time-local percentile normalisation.
-- `react-2026-prop3` -- does propagation survive test-like entity groups.
+- `react-2026-candidate` -- final artifact: arm C + 7-day blocked customer
+  propagation at w=0.05.
 
 
 Kaggle kernels are generated from `src/` by `scripts/build_kaggle_kernel.py`,
