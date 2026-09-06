@@ -4,7 +4,7 @@ This file tracks all generated candidate submission files, their validation scor
 
 | Candidate File | Local Tail PR-AUC | Git Tag / Commit | MD5 Checksum | Status |
 |---|---|---|---|---|
-| `CANDIDATE_tuned_horizon_0.5288.csv` | **0.5288** | pending commit | `6d87e95b5dab95654c19b95fec97fa54` | **Active Top Candidate** (Tuned Multi-Horizon Blend) |
+| `CANDIDATE_tuned_horizon_0.5288.csv` | **0.5288** | tag: `candidate-0.5288` (`76fa02b`) | `6d87e95b5dab95654c19b95fec97fa54` | **Active Top Candidate** (Tuned Multi-Horizon Blend) |
 | `CANDIDATE_multimodel_multihorizon_0.5282.csv` | 0.5282 | tag: `candidate-0.5282` (`59f5443`) | `9ee7c0095d28c796059717e2e48ffc06` | Archived (Un-tuned 90d Blend) |
 | `CANDIDATE_pruned_top160_lgb_0.5269.csv` | 0.5269 | tag: `candidate-0.5269` (`ab2fe4e`) | `2fc4b6148a2cecaa26c0258a5c137b5e` | Archived (Single Full-Train LGB) |
 | `CANDIDATE_sanzid_local_0.5246.csv` | 0.5246 | tag: `candidate-0.5246` (`00c922d`) | `b649c49c45494999b78911ed71d9a265` | Archived (All 216 features) |
