@@ -36,15 +36,20 @@ Last updated: **2026-09-06 10:56 Dhaka** (~37h to the 2026-09-07 23:59:59 hard d
 
 ## In progress
 
-- CV re-run with merchant/device trailing 1h/24h windows added (customer already had them) — running now, will report per-fold deltas vs. the v1 numbers (0.7337 / 0.7673 / 0.7565 / 0.4952) once done.
+- ~~CV re-run with merchant/device trailing 1h/24h windows~~ **Done.** Result:
+  small net positive (mean PR-AUC 0.6882 → 0.6923), no regressions of
+  concern. The drift fold (fold 3) barely moved (0.4952 → 0.4973, within
+  noise) — confirming again that fold's difficulty is a genuine behavior
+  shift, not something more features fix. Keeping the extended windows.
+- Targeted hyperparameter search on the drift fold (fold 3) — running now.
 
 ## What's next
 
-1. Finish the extended-window CV comparison above; keep the change only if it's a genuine improvement, not noise.
-2. Light hyperparameter tuning via the existing CV harness (learning rate / num_leaves / regularization) — validated locally, no submission spent until there's a confirmed gain.
-3. Decide on the optional CatBoost blend (PLAN.md: opportunistic, only if hours allow with LightGBM already solid).
-4. Stretch goal (only after the above): second-order relationship/cluster features via `scipy.sparse.csgraph.connected_components` — not started yet, lowest priority per the council's scope-creep triage.
-5. Keep building the Kaggle Notebook version incrementally (not just at the end) given the tight ~10h post-close reproducibility window.
+1. Finish the hyperparameter search above; adopt only a config that helps without hurting the easier folds.
+2. Decide on the optional CatBoost blend (PLAN.md: opportunistic, only if hours allow with LightGBM already solid).
+3. Stretch goal (only after the above): second-order relationship/cluster features via `scipy.sparse.csgraph.connected_components` — not started yet, lowest priority per the council's scope-creep triage.
+4. Keep building the Kaggle Notebook version incrementally (not just at the end) given the tight ~10h post-close reproducibility window.
+5. Retrain + validate the final model with whatever the best-confirmed feature/hyperparameter set turns out to be; no Kaggle submission until the team says so.
 
 ## Key risks being tracked
 
