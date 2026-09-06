@@ -6,7 +6,10 @@ from sklearn.metrics import average_precision_score, precision_score, recall_sco
 
 from src.config import ID_COLS, LABEL_COL, TIME_COL, SEED, FEVAL_SUBSAMPLE_SIZE
 
-CAT_COLS = ["merchant_category", "device_type", "location", "payment_method", "transaction_type"]
+CAT_COLS = [
+    "merchant_category", "device_type", "location", "payment_method", "transaction_type",
+    "pay_x_dev", "cat_x_loc", "txn_x_pay",
+]
 # log_amount_bdt is a helper column for the log-space z-scores, not a model
 # feature: it is a monotonic transform of amount_bdt, so it yields identical
 # tree splits and identical AP while consuming a feature_fraction slot.

@@ -421,6 +421,35 @@ def add_location_and_category_context_features(df: pd.DataFrame) -> pd.DataFrame
     cat_prior_mean = cat_prior_sum / cat_prior_cnt.replace(0, np.nan)
     df["amt_vs_cat_mean_prior"] = df["amount_bdt"] / (cat_prior_mean + EPS)
 
+    # Location-level amount ratio
+    loc_grp = df.groupby(loc_filled)["amount_bdt"]
+    loc_cum_sum = loc_grp.cumsum()
+    loc_prior_sum = loc_cum_sum - df["amount_bdt"]
+    loc_prior_cnt = loc_grp.cumcount().astype("float64")
+    loc_prior_mean = loc_prior_sum / loc_prior_cnt.replace(0, np.nan)
+    df["loc_amt_ratio"] = df["amount_bdt"] / (loc_prior_mean + EPS)
+
+    # Rolling 24h spending pace ratios & velocity acceleration
+    if "cust_cnt_24h" in df.columns and "cust_amtsum_24h" in df.columns:
+        cust_24h_mean = df["cust_amtsum_24h"] / (df["cust_cnt_24h"] + EPS)
+        df["cust_amt_vs_24h_mean"] = df["amount_bdt"] / (cust_24h_mean + EPS)
+        df["cust_burst_accel"] = (df["cust_cnt_1h"] * 24.0) / (df["cust_cnt_24h"] + 1.0)
+    if "dev_cnt_24h" in df.columns and "dev_amtsum_24h" in df.columns:
+        dev_24h_mean = df["dev_amtsum_24h"] / (df["dev_cnt_24h"] + EPS)
+        df["dev_amt_vs_24h_mean"] = df["amount_bdt"] / (dev_24h_mean + EPS)
+        df["dev_burst_accel"] = (df["dev_cnt_1h"] * 24.0) / (df["dev_cnt_24h"] + 1.0)
+
+    # Categorical interaction crosses (coarse attributes)
+    df["pay_x_dev"] = df["payment_method"].astype(str) + "_" + df["device_type"].astype(str)
+    df["cat_x_loc"] = df["merchant_category"].astype(str) + "_" + df["location"].astype(str)
+    df["txn_x_pay"] = df["transaction_type"].astype(str) + "_" + df["payment_method"].astype(str)
+
+    rows_so_far = np.arange(len(df), dtype="float64")
+    for col in ["pay_x_dev", "cat_x_loc", "txn_x_pay"]:
+        filled = df[col].fillna("__unknown__")
+        prior_cnt = filled.groupby(filled).cumcount().astype("float64")
+        df[f"{col}_freq_share_prior"] = prior_cnt / np.maximum(rows_so_far, 1.0)
+
     if "cust_cnt_1h" in df.columns and "cust_amtsum_1h" in df.columns:
         df["cust_smurf_ratio_1h"] = (df["cust_cnt_1h"] + 1.0) / (df["cust_amtsum_1h"] + 10.0)
     if "dev_cnt_1h" in df.columns and "dev_amtsum_1h" in df.columns:
