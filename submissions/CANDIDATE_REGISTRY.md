@@ -4,7 +4,9 @@ This file tracks all generated candidate submission files, their validation scor
 
 | Candidate File | Local Tail PR-AUC | Git Tag / Commit | MD5 Checksum | Status |
 |---|---|---|---|---|
-| `CANDIDATE_tuned_horizon_0.5288.csv` | **0.5288** | tag: `candidate-0.5288` (`76fa02b`) | `6d87e95b5dab95654c19b95fec97fa54` | **Active Top Candidate** (Tuned Multi-Horizon Blend) |
+| `CANDIDATE_tri_architecture_0.5295.csv` | **0.5295 – 0.5298** | tag: `candidate-0.5295` (`1d5ed42`) | `db4759abbdcbe76e609e49a3b9cfe88a` | **All-Time Local High** (Tree-Neural Tri-Architecture) |
+| `CANDIDATE_bagged_resnet_tri_0.5292.csv` | 0.5292 | commit `d28cc6d` | `953d4dcaaa5799f528e1109f7c865934` | 3-Seed Bagged ResNet + Champion GBDT |
+| `CANDIDATE_tuned_horizon_0.5288.csv` | **0.5288** | branch: `candidate/tuned-horizon-0.5288` (`0db895e`) | `6d87e95b5dab95654c19b95fec97fa54` | **Morning Submit Champion** (Pure GBDT 48/52 Horizon Blend) |
 | `CANDIDATE_multimodel_multihorizon_0.5282.csv` | 0.5282 | tag: `candidate-0.5282` (`59f5443`) | `9ee7c0095d28c796059717e2e48ffc06` | Archived (Un-tuned 90d Blend) |
 | `CANDIDATE_pruned_top160_lgb_0.5269.csv` | 0.5269 | tag: `candidate-0.5269` (`ab2fe4e`) | `2fc4b6148a2cecaa26c0258a5c137b5e` | Archived (Single Full-Train LGB) |
 | `CANDIDATE_sanzid_local_0.5246.csv` | 0.5246 | tag: `candidate-0.5246` (`00c922d`) | `b649c49c45494999b78911ed71d9a265` | Archived (All 216 features) |
@@ -15,6 +17,10 @@ This file tracks all generated candidate submission files, their validation scor
 1. **Direct CSV use:** The CSVs in `submissions/` are preserved locally.
 2. **Reproduce from code:**
    ```bash
+   # Example: to reproduce candidate 0.5295 (All-time high Tree-Neural Tri-Architecture):
+   git checkout candidate-0.5295
+   .venv/bin/python scripts/28_tri_architecture_champion.py
+
    # Example: to reproduce candidate 0.5288:
    git checkout candidate-0.5288
    .venv/bin/python scripts/24_generate_0.5288_candidate.py
