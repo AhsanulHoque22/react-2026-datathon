@@ -780,15 +780,12 @@ FINAL_PARAMS = dict(
 )
 
 
-# ====== does propagating predictions across an entity's rows help? =========
-# Fraud is not independent per transaction: if one of a customer's or device's
-# transactions is fraudulent, its siblings are likelier to be too. A per-row
-# model cannot express that -- it scores each row alone. Blending each row's
-# score with an aggregate of its entity's OTHER scored rows is a transductive
-# post-process that can only sharpen a ranking metric if the clustering is real.
-#
-# Uses no labels at all on the scored window -- only model outputs and entity
-# ids -- so it is clean under every rule: nothing is fitted to test.csv.
+# ===== properly powered follow-up: is customer-level propagation real? =====
+# The first pass found customer loo_mean at w=0.1 positive on both windows,
+# averaging exactly the +0.004 threshold -- but each blend was a single AP with
+# no error bar, which is precisely the trap that produced seven false results
+# earlier in this competition. This runs 4 windows x 3 seeds and reports a
+# mean +/- std per weight, so the answer is a measurement rather than a reading.
 def main():
     t0 = time.time()
     train = pd.read_csv(TRAIN_CSV, parse_dates=[TIME_COL])
@@ -806,34 +803,25 @@ def main():
     gc.collect()
     print(f"featurized, {len(cols)} features ({time.time()-t0:.0f}s)", flush=True)
 
-    # First: is the clustering even there? Measure it on labelled data.
-    for ent in ("customer_id", "merchant_id", "device_id"):
-        g = labeled.groupby(ent)[LABEL_COL]
-        n, k = g.size(), g.sum()
-        multi = n > 1
-        # P(another row of this entity is fraud | this row is fraud), vs base rate
-        # P(sibling fraud | fraud) is the ratio of ordered fraud-fraud pairs to
-        # ordered fraud-anything pairs. Dividing by n(n-1) instead gives the
-        # JOINT probability, which compared against the marginal makes real
-        # clustering look like none.
-        joint = float((k * (k - 1)).loc[multi].sum() / (n * (n - 1)).loc[multi].sum())
-        cond = float((k * (k - 1)).loc[multi].sum() / (k * (n - 1)).loc[multi].sum())
-        base_rate = float(labeled[LABEL_COL].mean())
-        print(f"  {ent:14s} joint={joint:.5f}  P(sibling fraud|fraud)={cond:.4f} "
-              f"vs base {base_rate:.4f} -> lift {cond/base_rate:.2f}x", flush=True)
+    WINDOWS = {
+        "Jun25-Jul02": ("2026-06-25", "2026-07-02"),
+        "Jul02-Jul08": ("2026-07-02", "2026-07-08"),
+        "Jul08-Jul16": ("2026-07-08", "2026-07-16"),
+        "fold2-guard": ("2026-06-18", "2026-07-02"),
+    }
+    WEIGHTS = [0.0, 0.05, 0.10, 0.15, 0.20]
+    ENTS = ["customer_id", "device_id"]
 
-    WINDOWS = {"Jul02-Jul08": ("2026-07-02", "2026-07-08"),
-               "Jul08-Jul16": ("2026-07-08", "2026-07-16")}
-    ENTITIES = ["customer_id", "device_id", "merchant_id"]
-    WEIGHTS = [0.0, 0.1, 0.2, 0.3, 0.5]
-
+    per_window = {}
     for wname, (s_, e_) in WINDOWS.items():
         s_ts, e_ts = pd.Timestamp(s_), pd.Timestamp(e_)
         tr = labeled.loc[labeled[TIME_COL] < s_ts]
         va = labeled.loc[(labeled[TIME_COL] >= s_ts) & (labeled[TIME_COL] < e_ts)]
         X_tr, y_tr = prepare_lgb_frame(tr, cols, cc), tr[LABEL_COL].astype(int)
         X_va, y_va = prepare_lgb_frame(va, cols, cc), va[LABEL_COL].astype(int)
-        preds = []
+        yv = y_va.values
+        # per-seed so each blend gets a genuine standard deviation
+        scores = {(ent, w): [] for ent in ENTS for w in WEIGHTS}
         for seed in (0, 1, 2):
             params = dict(objective="binary", metric="None", verbosity=-1,
                           learning_rate=0.02, num_leaves=127, feature_fraction=0.85,
@@ -845,34 +833,38 @@ def main():
                             feval=make_pr_auc_feval(y_va.values, seed=seed),
                             callbacks=[lgb.early_stopping(200, verbose=False),
                                        lgb.log_evaluation(period=0)])
-            preds.append(bst.predict(X_va, num_iteration=bst.best_iteration))
-        p = np.mean(preds, axis=0)
-        yv = y_va.values
-        print(f"\n--- {wname}: baseline AP {average_precision_score(yv, p):.4f} "
-              f"({len(va)} rows, {int(yv.sum())} frauds) [{time.time()-t0:.0f}s]", flush=True)
-
-        for ent in ENTITIES:
-            key = va[ent].values
-            sp = pd.Series(p, index=key)
-            grp = sp.groupby(level=0)
-            n_ent = grp.transform("size").to_numpy()
-            # leave-one-out mean of the entity's OTHER rows; max over others too
-            tot = grp.transform("sum").to_numpy()
-            loo_mean = np.where(n_ent > 1, (tot - p) / np.maximum(n_ent - 1, 1), p)
-            g_max = grp.transform("max").to_numpy()
-            # if this row IS the max, fall back to its own value (no other-row max
-            # is available cheaply); only affects singletons and argmax rows
-            loo_max = np.where(n_ent > 1, g_max, p)
-            for aggname, agg in (("loo_mean", loo_mean), ("loo_max", loo_max)):
-                line = f"    {ent:12s} {aggname:9s}"
+            p = bst.predict(X_va, num_iteration=bst.best_iteration)
+            for ent in ENTS:
+                sp = pd.Series(p, index=va[ent].values)
+                grp = sp.groupby(level=0)
+                n_ent = grp.transform("size").to_numpy()
+                tot = grp.transform("sum").to_numpy()
+                loo = np.where(n_ent > 1, (tot - p) / np.maximum(n_ent - 1, 1), p)
                 for w in WEIGHTS:
-                    blended = (1 - w) * p + w * agg
-                    line += f"  w={w}:{average_precision_score(yv, blended):.4f}"
-                print(line, flush=True)
+                    scores[(ent, w)].append(average_precision_score(yv, (1 - w) * p + w * loo))
+        per_window[wname] = {k: (float(np.mean(v)), float(np.std(v))) for k, v in scores.items()}
+        for ent in ENTS:
+            line = f"  {wname:12s} {ent:12s}"
+            for w in WEIGHTS:
+                m, sd = per_window[wname][(ent, w)]
+                line += f"  w={w}:{m:.4f}+-{sd:.4f}"
+            print(line, flush=True)
         del X_tr, X_va
         gc.collect()
 
-    print("\nA weight column beating w=0.0 by >= 0.004 on both windows is a real win.")
+    print("\n============ PROPAGATION, 4 WINDOWS x 3 SEEDS ============")
+    recent = [w for w in WINDOWS if w != "fold2-guard"]
+    for ent in ENTS:
+        print(f"\n{ent}:")
+        b = np.mean([per_window[w][(ent, 0.0)][0] for w in recent])
+        for wt in WEIGHTS:
+            rm = np.mean([per_window[w][(ent, wt)][0] for w in recent])
+            n_up = sum(per_window[w][(ent, wt)][0] > per_window[w][(ent, 0.0)][0] for w in recent)
+            worst = min(per_window[w][(ent, wt)][0] - per_window[w][(ent, 0.0)][0] for w in recent)
+            guard = per_window["fold2-guard"][(ent, wt)][0] - per_window["fold2-guard"][(ent, 0.0)][0]
+            ok = (rm - b) >= 0.004 and n_up >= 2 and worst >= -0.003
+            print(f"  w={wt:<5} recent-mean {rm:.4f} (delta {rm-b:+.4f}), {n_up}/3 up, "
+                  f"worst {worst:+.4f}, guard {guard:+.4f} -> {'ACCEPT' if ok else 'reject'}")
 
 
 if __name__ == "__main__":
