@@ -181,13 +181,33 @@ empty window, so "zero transactions in the last hour" — real information — w
 encoded as *unknown*, including in the pre-existing `cnt_1h`/`amtsum_1h`
 features. Counts/sums now zero-fill; ratios correctly stay NaN.
 
+### Stage-2 sweep (`react-2026-sweep`) — `min_data_in_leaf` x `feature_fraction`
+
+12 configs x 2 windows x 3 seeds at the fixed `lr=0.02 / num_leaves=127`.
+**The incumbent `mdl=50, ff=0.85` is already the grid optimum**, so nothing
+changes.
+
+| min_data_in_leaf | ff=0.50 | ff=0.70 | ff=0.85 |
+|---|---|---|---|
+| 20 | 0.5212 | 0.5225 | 0.5219 |
+| **50** | 0.5217 | 0.5216 | **0.5230** |
+| 200 | 0.5217 | 0.5214 | 0.5225 |
+| 500 | 0.5215 | 0.5212 | 0.5202 |
+
+(Jul 1-15 tail, 3-seed means, per-cell std 0.0002-0.0009.)
+
+The entire grid spans **0.0028**, barely above one seed-std, and the top four
+cells are separated by 0.0005. Read honestly this is a **flat surface, not a
+ranking** — `mdl=50/ff=0.85` "winning" is not distinguishable from
+`mdl=20/ff=0.70`. The useful conclusion is the negative one: these two knobs
+have nothing left to give, and the +0.002-0.004 they were hoped to add does
+not exist. Only `mdl=500` is clearly bad (over-regularised: 453 rounds at
+ff=0.85 vs ~940).
+
 ## In flight (Kaggle, all compute runs there now)
 
-`react-2026-final` **completed** — results above.
+`react-2026-final` and `react-2026-sweep` **completed** — results above.
 
-- **`react-2026-sweep`** (stage 2) — `min_data_in_leaf` × `feature_fraction` at
-  the new lr/leaves, which stage 1 held fixed and which matter more now that
-  we train ~940 rounds instead of ~140.
 - **`react-2026-horizon`** — forecast-horizon decay. We tune rounds on Jul 1–15
   (1–15 days ahead) but the test runs to **62 days** past training. Holds the
   validation window fixed and walks the training cutoff back (gaps 0→60 days)
