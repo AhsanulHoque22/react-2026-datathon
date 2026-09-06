@@ -659,113 +659,153 @@ FINAL_PARAMS = dict(
 )
 
 
-# ----------------------------- pipeline ------------------------------------
+# =================== FINAL: aggregate everything, score locally =============
+# Combines every validated fix (no class weighting, swept lr=0.02/leaves=127,
+# 5-seed averaging, stationary encodings, self-relative features) with the new
+# Phase 3 recent-window family, and scores across MULTIPLE recent windows
+# rather than repeatedly against fold 3's 804 positives.
+#
+# Acceptance rule (from FOLD3_IMPROVEMENT_PLAN.md): a candidate wins only if
+# the recent-window mean improves by >=0.004, at least two windows improve,
+# no window drops more than 0.003, and it holds across 3 seeds.
 def main():
     t0 = time.time()
-    print("Loading raw data...", flush=True)
     train = pd.read_csv(TRAIN_CSV, parse_dates=[TIME_COL])
     test = pd.read_csv(TEST_CSV, parse_dates=[TIME_COL])
-    print(f"train={train.shape} test={test.shape} ({time.time()-t0:.1f}s)", flush=True)
-
     df = build_combined_frame(train, test)
     assert_frame_sane(df)
     del train, test
     gc.collect()
-
-    print("Building features...", flush=True)
     df = build_features(df)
     leakage_assertions(df)
-    print(f"featurized={df.shape} ({time.time()-t0:.1f}s)", flush=True)
-
     feature_cols, cat_cols = get_feature_columns(df)
-    frame_time_sorted = bool(df[TIME_COL].is_monotonic_increasing)
+    print(f"featurized={df.shape}, {len(feature_cols)} features ({time.time()-t0:.0f}s)", flush=True)
+
+    NEW = [c for c in feature_cols if any(k in c for k in (
+        "_amt_vs_recent_mean_", "_amt_vs_recent_max_", "_fresh_",
+        "_cnt_5m", "_cnt_15m", "_cnt_30m", "_cnt_3h", "_cnt_12h",
+        "_amtsum_5m", "_amtsum_15m", "_amtsum_30m", "_amtsum_3h", "_amtsum_12h",
+        "_gap_accel", "_velocity_ratio_", "_amt_vs_prior_max", "_is_record_amt",
+        "_hour_bucket_share", "_new_hour_bucket"))]
+    GRAPH = [c for c in feature_cols if "component_size_prior" in c]
+    OLD = [c for c in feature_cols if c not in NEW]
+    print(f"{len(NEW)} new / {len(OLD)} old / {len(GRAPH)} graph", flush=True)
+
     labeled = df[~df["is_test"]]
     test_df = df[df["is_test"]]
-
-    # ---- walk-forward CV: report per fold, and the fold that matters ----
-    print("\n=== Walk-forward CV ===", flush=True)
-    fold_scores = {}
-    for i, (start, end) in enumerate(CV_FOLDS):
-        s_ts, e_ts = pd.Timestamp(start), pd.Timestamp(end)
-        tr = labeled.loc[labeled[TIME_COL] < s_ts]
-        va = labeled.loc[(labeled[TIME_COL] >= s_ts) & (labeled[TIME_COL] < e_ts)]
-        X_tr, y_tr = prepare_lgb_frame(tr, feature_cols, cat_cols), tr[LABEL_COL].astype(int)
-        X_va, y_va = prepare_lgb_frame(va, feature_cols, cat_cols), va[LABEL_COL].astype(int)
-        bst = train_lgb(X_tr, y_tr, X_va, y_va, cat_cols)
-        p = bst.predict(X_va, num_iteration=bst.best_iteration)
-        ap = average_precision_score(y_va, p)
-        has_hist = (va["cust_history_count"] > 0).values
-        ap_hist = average_precision_score(y_va[has_hist], p[has_hist]) if has_hist.sum() else float("nan")
-        ap_cold = average_precision_score(y_va[~has_hist], p[~has_hist]) if (~has_hist).sum() else float("nan")
-        pk, _ = precision_recall_at_k(y_va.values, p, 0.005)
-        _, rk = precision_recall_at_k(y_va.values, p, 0.01)
-        fold_scores[i] = ap
-        print(f"fold{i} [{start}->{end}] PR-AUC={ap:.4f} (hist={ap_hist:.4f} cold={ap_cold:.4f}) "
-              f"P@0.5%={pk:.3f} R@1%={rk:.3f} iter={bst.best_iteration}", flush=True)
-        del X_tr, X_va, bst
-        gc.collect()
-
-    vals = np.array(list(fold_scores.values()))
-    print(f"mean={vals.mean():.4f} min={vals.min():.4f} max={vals.max():.4f} std={vals.std():.4f}")
-    print(f"LAST fold (the one that tracks the leaderboard) = {vals[-1]:.4f}", flush=True)
-
-    # ---- iteration count from a held-out tail, then seed-averaged refit ----
-    holdout_start = pd.Timestamp("2026-07-01")
-    fit_df = labeled.loc[labeled[TIME_COL] < holdout_start]
-    hold_df = labeled.loc[labeled[TIME_COL] >= holdout_start]
-    X_fit, y_fit = prepare_lgb_frame(fit_df, feature_cols, cat_cols), fit_df[LABEL_COL].astype(int)
-    X_hold, y_hold = prepare_lgb_frame(hold_df, feature_cols, cat_cols), hold_df[LABEL_COL].astype(int)
-    probe = train_lgb(X_fit, y_fit, X_hold, y_hold, cat_cols)
-    probe_ap = average_precision_score(y_hold, probe.predict(X_hold, num_iteration=probe.best_iteration))
-    final_rounds = int(round(probe.best_iteration * 1.1))
-    print(f"\nHeld-out PR-AUC={probe_ap:.4f} best_iter={probe.best_iteration} -> rounds={final_rounds}", flush=True)
-    del X_fit, X_hold, probe
+    frame_sorted = bool(df[TIME_COL].is_monotonic_increasing)
+    del df
     gc.collect()
 
-    X_full = prepare_lgb_frame(labeled, feature_cols, cat_cols)
-    y_full = labeled[LABEL_COL].astype(int)
-    X_test = prepare_lgb_frame(test_df, feature_cols, cat_cols)
-    test_ids = test_df["transaction_id"].values
-    del df, labeled, test_df
+    WINDOWS = {
+        "Jun25-Jul02": ("2026-06-25", "2026-07-02"),
+        "Jul02-Jul08": ("2026-07-02", "2026-07-08"),
+        "Jul08-Jul16": ("2026-07-08", "2026-07-16"),
+        "fold2-guard": ("2026-06-18", "2026-07-02"),
+    }
+
+    ARMS = {
+        "A_prev_best(lr.05/63,old feats)": (OLD, dict(learning_rate=0.05, num_leaves=63)),
+        "B_new_feats(lr.02/127)":          (feature_cols, dict(learning_rate=0.02, num_leaves=127)),
+        "C_B_minus_graph":                 ([c for c in feature_cols if c not in GRAPH],
+                                            dict(learning_rate=0.02, num_leaves=127)),
+    }
+
+    results = {}
+    for arm, (cols, cfg) in ARMS.items():
+        cc = [c for c in cat_cols if c in cols]
+        results[arm] = {}
+        for wname, (s_, e_) in WINDOWS.items():
+            s_ts, e_ts = pd.Timestamp(s_), pd.Timestamp(e_)
+            tr = labeled.loc[labeled[TIME_COL] < s_ts]
+            va = labeled.loc[(labeled[TIME_COL] >= s_ts) & (labeled[TIME_COL] < e_ts)]
+            X_tr, y_tr = prepare_lgb_frame(tr, cols, cc), tr[LABEL_COL].astype(int)
+            X_va, y_va = prepare_lgb_frame(va, cols, cc), va[LABEL_COL].astype(int)
+            aps = []
+            for seed in (0, 1, 2):
+                params = dict(objective="binary", metric="None", verbosity=-1,
+                              feature_fraction=0.85, bagging_fraction=0.85, bagging_freq=1,
+                              min_data_in_leaf=50, seed=seed, bagging_seed=seed,
+                              feature_fraction_seed=seed, **cfg)
+                ds_tr = lgb.Dataset(X_tr, label=y_tr, categorical_feature=cc, free_raw_data=False)
+                ds_va = lgb.Dataset(X_va, label=y_va, categorical_feature=cc, reference=ds_tr, free_raw_data=False)
+                bst = lgb.train(params, ds_tr, num_boost_round=4000, valid_sets=[ds_va],
+                                feval=make_pr_auc_feval(y_va.values, seed=seed),
+                                callbacks=[lgb.early_stopping(200, verbose=False),
+                                           lgb.log_evaluation(period=0)])
+                aps.append(average_precision_score(y_va, bst.predict(X_va, num_iteration=bst.best_iteration)))
+            results[arm][wname] = (float(np.mean(aps)), float(np.std(aps)))
+            print(f"  {arm:34s} {wname:12s} n_fraud={int(y_va.sum()):4d} "
+                  f"{np.mean(aps):.4f} +/- {np.std(aps):.4f}  [{time.time()-t0:.0f}s]", flush=True)
+            del X_tr, X_va
+            gc.collect()
+
+    print("\n================= FINAL LOCAL SCORES =================")
+    recent = [w for w in WINDOWS if w != "fold2-guard"]
+    hdr = f"{'arm':36s}" + "".join(f"{w:>16s}" for w in WINDOWS) + f"{'RECENT MEAN':>14s}"
+    print(hdr)
+    for arm in ARMS:
+        row = f"{arm:36s}"
+        for w in WINDOWS:
+            m, sd = results[arm][w]
+            row += f"{m:>10.4f}+-{sd:.3f}"
+        rm = np.mean([results[arm][w][0] for w in recent])
+        row += f"{rm:>14.4f}"
+        print(row)
+
+    base = np.mean([results["A_prev_best(lr.05/63,old feats)"][w][0] for w in recent])
+    for arm in ["B_new_feats(lr.02/127)", "C_B_minus_graph"]:
+        rm = np.mean([results[arm][w][0] for w in recent])
+        improved = sum(results[arm][w][0] > results["A_prev_best(lr.05/63,old feats)"][w][0] for w in recent)
+        worst = min(results[arm][w][0] - results["A_prev_best(lr.05/63,old feats)"][w][0] for w in recent)
+        verdict = ("ACCEPT" if (rm - base) >= 0.004 and improved >= 2 and worst >= -0.003
+                   else "reject (does not clear the acceptance rule)")
+        print(f"\n{arm}: recent-mean {rm:.4f} vs {base:.4f} (delta {rm-base:+.4f}), "
+              f"{improved}/{len(recent)} windows improved, worst delta {worst:+.4f} -> {verdict}")
+
+    # Train the best-by-recent-mean arm on all of train and write a candidate.
+    best_arm = max(ARMS, key=lambda a: np.mean([results[a][w][0] for w in recent]))
+    print(f"\nBest arm: {best_arm} -- training final candidate", flush=True)
+    cols, cfg = ARMS[best_arm]
+    cc = [c for c in cat_cols if c in cols]
+    hold_start = pd.Timestamp("2026-07-01")
+    fit = labeled.loc[labeled[TIME_COL] < hold_start]
+    hold = labeled.loc[labeled[TIME_COL] >= hold_start]
+    X_f, y_f = prepare_lgb_frame(fit, cols, cc), fit[LABEL_COL].astype(int)
+    X_h, y_h = prepare_lgb_frame(hold, cols, cc), hold[LABEL_COL].astype(int)
+    base_params = dict(objective="binary", metric="None", verbosity=-1,
+                       feature_fraction=0.85, bagging_fraction=0.85, bagging_freq=1,
+                       min_data_in_leaf=50, **cfg)
+    probe = lgb.train(dict(base_params, seed=0, bagging_seed=0, feature_fraction_seed=0),
+                      lgb.Dataset(X_f, label=y_f, categorical_feature=cc, free_raw_data=False),
+                      num_boost_round=4000,
+                      valid_sets=[lgb.Dataset(X_h, label=y_h, categorical_feature=cc, free_raw_data=False)],
+                      feval=make_pr_auc_feval(y_h.values, seed=0),
+                      callbacks=[lgb.early_stopping(200, verbose=False), lgb.log_evaluation(period=0)])
+    rounds = int(round(probe.best_iteration * 1.1))
+    print(f"held-out(Jul01-15)={average_precision_score(y_h, probe.predict(X_h, num_iteration=probe.best_iteration)):.4f} "
+          f"rounds={rounds}", flush=True)
+    del X_f, X_h, probe
     gc.collect()
 
-    print(f"Refitting on full train, averaged over {len(SEEDS)} seeds...", flush=True)
-    ds = lgb.Dataset(X_full, label=y_full, categorical_feature=cat_cols, free_raw_data=False)
-    seed_preds = []
-    last_bst = None
-    for s in SEEDS:
-        params = dict(FINAL_PARAMS, seed=s, bagging_seed=s, feature_fraction_seed=s)
-        bst = lgb.train(params, ds, num_boost_round=final_rounds)
-        seed_preds.append(bst.predict(X_test))
-        last_bst = bst
-        print(f"  seed {s} done ({time.time()-t0:.0f}s)", flush=True)
-    preds = np.mean(seed_preds, axis=0)
+    X_full, y_full = prepare_lgb_frame(labeled, cols, cc), labeled[LABEL_COL].astype(int)
+    X_test = prepare_lgb_frame(test_df, cols, cc)
+    ids = test_df["transaction_id"].values
+    ds = lgb.Dataset(X_full, label=y_full, categorical_feature=cc, free_raw_data=False)
+    preds = np.mean([lgb.train(dict(base_params, seed=s, bagging_seed=s, feature_fraction_seed=s),
+                               ds, num_boost_round=rounds).predict(X_test) for s in (0, 1, 2, 3, 4)], axis=0)
 
-    # ---- pre-submission assertions (PLAN.md checklist) ----
-    assert frame_time_sorted, "frame not time-sorted"
-    assert LABEL_COL not in X_test.columns
+    assert frame_sorted and LABEL_COL not in X_test.columns
     for c in ID_COLS:
-        assert c not in X_test.columns, f"banned raw ID column {c} in feature matrix"
-    assert np.all((preds >= 0) & (preds <= 1)), "predictions outside [0,1]"
-    assert not np.isnan(preds).any(), "NaN predictions"
-
+        assert c not in X_test.columns
+    assert np.all((preds >= 0) & (preds <= 1)) and not np.isnan(preds).any()
     sample = pd.read_csv(SAMPLE_SUBMISSION_CSV)
-    sub = pd.DataFrame({"transaction_id": test_ids, "fraud": preds})
+    sub = pd.DataFrame({"transaction_id": ids, "fraud": preds})
     sub = sub.set_index("transaction_id").loc[sample["transaction_id"]].reset_index()
-    assert list(sub["transaction_id"]) == list(sample["transaction_id"]), "row order mismatch"
-    assert sub.shape == sample.shape
-    assert sub["fraud"].between(0, 1).all()
-    assert (sub["fraud"] != sub["fraud"].round().astype(int)).any(), "looks thresholded to 0/1"
-
+    assert list(sub["transaction_id"]) == list(sample["transaction_id"])
+    assert (sub["fraud"] != sub["fraud"].round().astype(int)).any()
     sub.to_csv(OUT_DIR / "submission.csv", index=False)
-    print(f"\nAll assertions passed. Wrote submission.csv {sub.shape} (total {time.time()-t0:.1f}s)")
-    print(sub["fraud"].describe())
-
-    imp = pd.Series(last_bst.feature_importance(importance_type="gain"),
-                    index=feature_cols).sort_values(ascending=False)
-    print("\nTop 20 features by gain:")
-    print(imp.head(20).to_string())
-    imp.to_csv(OUT_DIR / "feature_importance.csv")
+    print(f"\nWrote candidate submission.csv from {best_arm} ({time.time()-t0:.0f}s)")
 
 
 if __name__ == "__main__":

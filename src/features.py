@@ -217,6 +217,73 @@ def add_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def add_recent_window_stats(df: pd.DataFrame, entity_col: str, prefix: str, windows=("5min", "15min", "30min", "3h", "12h")) -> pd.DataFrame:
+    """Sub-hour and intermediate horizons, plus amount-relative-to-recent.
+
+    Phase 3.1/3.2 of the fold-3 plan. Short-window device velocity is the one
+    family that gets STRONGER in July (dev_amtsum_6h 1.82x, dev_amtsum_24h
+    1.96x June->July), so the burst region between 5 minutes and 12 hours is
+    where the surviving signal lives -- and we previously only sampled
+    1h/6h/24h/72h/168h, skipping sub-hour entirely.
+
+    The ratios matter more than the levels: absolute amount thresholds
+    transfer badly across the regime change (median fraud amount fell from
+    ~2,524 to ~1,064 BDT), while "large relative to this entity's own recent
+    behaviour" is scale-free.
+    """
+    sub = df[[entity_col, TIME_COL, "amount_bdt"]]
+    grouped = sub.groupby(entity_col)
+    for w in windows:
+        roll = grouped.rolling(w, on=TIME_COL, closed="left")["amount_bdt"]
+        stats = roll.agg(["count", "sum", "mean", "max"])
+        stats = stats.reset_index(level=0, drop=True).sort_index()
+        tag = w.replace("min", "m")
+        # An empty window means ZERO prior activity, which is real information.
+        # pandas rolling returns NaN there, which would tell LightGBM "unknown"
+        # and lump quiet entities in with genuinely-missing values.
+        df[f"{prefix}_cnt_{tag}"] = np.nan_to_num(stats["count"].values, nan=0.0)
+        df[f"{prefix}_amtsum_{tag}"] = np.nan_to_num(stats["sum"].values, nan=0.0)
+        # scale-free: this amount against its own recent context
+        df[f"{prefix}_amt_vs_recent_mean_{tag}"] = df["amount_bdt"] / (stats["mean"].values + EPS)
+        df[f"{prefix}_amt_vs_recent_max_{tag}"] = df["amount_bdt"] / (stats["max"].values + EPS)
+    return df
+
+
+def add_recent_diversity_features(df: pd.DataFrame, entity_col: str, other_col: str, prefix: str,
+                                  windows=("1h", "24h", "168h")) -> pd.DataFrame:
+    """How many counterparties has this entity seen RECENTLY that it had not
+    seen just before -- i.e. current suspicious expansion.
+
+    Phase 3.3. The lifetime version of this saturates and dies: "device shared
+    with >3 customers" fires on 5.7% of rows in January but 91.7% by July, at
+    which point its fraud lift is ~0.9 (noise). A recent-window version cannot
+    saturate, because it forgets.
+
+    Implemented via pair recency rather than a rolling nunique (which pandas
+    cannot do efficiently over ~1M rows): flag rows where this exact
+    (entity, counterparty) pair had not transacted within the window, then
+    roll a sum of those flags. That counts "transactions from counterparties
+    this entity had not just seen" -- the expansion signal we want.
+    """
+    ts = df[TIME_COL].astype("int64") // 10 ** 9
+    pair = df[entity_col].astype(str) + "|" + df[other_col].astype(str)
+    pair_prev = ts.groupby(pair).shift(1)
+    pair_gap = ts - pair_prev  # NaN => never seen before
+
+    for w in windows:
+        secs = pd.Timedelta(w).total_seconds()
+        is_fresh = (pair_gap.isna() | (pair_gap > secs)).astype("float64")
+        tmp = pd.DataFrame({entity_col: df[entity_col], TIME_COL: df[TIME_COL], "_f": is_fresh})
+        roll = tmp.groupby(entity_col).rolling(w, on=TIME_COL, closed="left")["_f"]
+        fresh_cnt = roll.sum().reset_index(level=0, drop=True).sort_index()
+        cnt_col = f"{prefix}_cnt_{w}"
+        df[f"{prefix}_fresh_{other_col}_{w}"] = np.nan_to_num(fresh_cnt.values, nan=0.0)
+        if cnt_col in df.columns:
+            # share: is this entity's recent traffic mostly NEW counterparties?
+            df[f"{prefix}_fresh_{other_col}_share_{w}"] = fresh_cnt.values / (df[cnt_col] + 1.0)
+    return df
+
+
 def add_trailing_window_features(df: pd.DataFrame, entity_col: str, prefix: str, windows_hours=(1, 6, 24, 72, 168)) -> pd.DataFrame:
     """Trailing rolling count/sum of amount_bdt in the last N hours, strictly prior
     (closed='left' excludes the current row's own timestamp).
@@ -235,8 +302,9 @@ def add_trailing_window_features(df: pd.DataFrame, entity_col: str, prefix: str,
         roll = grouped.rolling(window, on=TIME_COL, closed="left")["amount_bdt"]
         cnt = roll.count().reset_index(level=0, drop=True).sort_index()
         s = roll.sum().reset_index(level=0, drop=True).sort_index()
-        df[f"{prefix}_cnt_{h}h"] = cnt.values
-        df[f"{prefix}_amtsum_{h}h"] = s.values
+        # empty window == zero prior activity (see add_recent_window_stats)
+        df[f"{prefix}_cnt_{h}h"] = np.nan_to_num(cnt.values, nan=0.0)
+        df[f"{prefix}_amtsum_{h}h"] = np.nan_to_num(s.values, nan=0.0)
 
     # This transaction's amount as a share of the entity's recent volume, and
     # burst ratios (short window vs long window). Both are scale-invariant
@@ -353,6 +421,26 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     # is-new-location-for-customer: same novelty pattern as device/merchant,
     # confirmed compliant and worthwhile signal by an independent teardown.
     df = add_pair_novelty_features(df, "customer_id", "location", "location_for_customer")
+
+    # Phase 3.1/3.2: sub-hour and intermediate horizons + amount-vs-recent
+    # ratios. Customer and device get the full ladder (both are in the family
+    # that strengthens in July); merchant gets fewer, to bound runtime.
+    # Window ladder matched to each entity's traffic density. A 5-minute
+    # CUSTOMER window is empty 99.6% of the time (customers average ~25
+    # transactions across 8 months), so those columns are almost pure NaN and
+    # only dilute feature sampling. Devices and merchants carry enough traffic
+    # for sub-hour horizons -- and device short-windows are precisely the
+    # family the July audit found strengthening.
+    df = add_recent_window_stats(df, "customer_id", "cust", windows=("30min", "3h", "12h"))
+    df = add_recent_window_stats(df, "device_id", "dev", windows=("5min", "15min", "30min", "3h", "12h"))
+    df = add_recent_window_stats(df, "merchant_id", "merch", windows=("5min", "30min", "3h"))
+
+    # Phase 3.3: recent counterparty expansion (the non-saturating version of
+    # the fan-out features whose lifetime form decays into noise by July).
+    df = add_recent_diversity_features(df, "device_id", "customer_id", "dev")
+    df = add_recent_diversity_features(df, "customer_id", "device_id", "cust")
+    df = add_recent_diversity_features(df, "customer_id", "merchant_id", "cust")
+    df = add_recent_diversity_features(df, "customer_id", "location", "cust")
 
     # Self-relative features -- must run AFTER the trailing windows, since
     # the velocity ratios normalise those counts by each entity's own rate.
