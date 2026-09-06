@@ -239,9 +239,58 @@ It also explains why recency weighting kept failing. Down-weighting old rows
 does not make the model younger; it just discards signal while leaving the
 staleness untouched.
 
+### Prediction propagation (`react-2026-prop`, `prop2`)
+
+Fraud clusters by entity, and a per-row model cannot express that. Blending
+each row's score with a leave-one-out mean of its entity's other scored rows
+uses only model outputs and entity ids -- no labels, nothing fitted to
+test.csv.
+
+Clustering is real (train rows, P(sibling fraud | fraud) vs the 0.0176 base):
+
+| entity | conditional | lift |
+|---|---|---|
+| device_id | 0.0682 | 3.87x |
+| customer_id | 0.0464 | 2.63x |
+| merchant_id | 0.0134 | 0.76x |
+
+**Bug worth remembering:** the first kernel divided fraud-fraud pairs by
+`n(n-1)`, which is the *joint* probability, and printed it as the conditional.
+Against the marginal that made 2.6x clustering read as "lift 0.0x" and nearly
+got the whole idea discarded.
+
+`prop2`, 4 windows x 3 seeds, customer-level:
+
+| weight | recent mean | delta | windows up | worst | fold2 guard |
+|---|---|---|---|---|---|
+| 0.05 | 0.6092 | **+0.0049** | 3/3 | +0.0028 | +0.0062 |
+| 0.10 | 0.6092 | **+0.0049** | 3/3 | +0.0028 | +0.0064 |
+| 0.15 | 0.6076 | +0.0034 | 3/3 | +0.0022 | +0.0042 |
+
+Cleanest ACCEPT since `scale_pos_weight`: every window up, guard up, no
+negative cell anywhere. Device rejects (2/3 up, worst -0.0018) -- 28 rows per
+entity pools in too much unrelated traffic. Merchant is dead, as its 0.76x
+lift predicts.
+
+**Not adopted yet, because the validation regime does not match test:**
+
+| window | rows/customer | singletons | median day-span |
+|---|---|---|---|
+| val Jul02-08 | 1.8 | 62.6% | 0 days |
+| val Jul08-16 | 2.0 | 57.8% | 0 days |
+| **TEST (62d)** | **7.5** | **18.6%** | **36 days** |
+
+The gain was measured where propagation is a no-op for ~60% of rows and pools
+same-day siblings. On test it would touch 81% of rows and pool transactions a
+month apart. `react-2026-prop3` re-validates on 60-day windows with test-like
+group sizes, and tries a 7-day-blocked variant as the fallback.
+
 ## In flight
 
-**Nothing.** All Kaggle kernels complete.
+- `react-2026-te` -- target-encoding payoff (measurement only; still banned).
+- `react-2026-drift` -- time-local percentile normalisation.
+- `react-2026-obj` -- ranking objectives vs logloss.
+- `react-2026-prop3` -- does propagation survive test-like entity groups.
 
 
 Kaggle kernels are generated from `src/` by `scripts/build_kaggle_kernel.py`,
