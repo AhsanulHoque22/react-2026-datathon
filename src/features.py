@@ -69,6 +69,17 @@ def add_entity_expanding_features(df: pd.DataFrame, entity_col: str, prefix: str
     prior_median, prior_mad = _prior_median_mad(df, entity_col, "amount_bdt", prior_count)
     df[f"{prefix}_amt_robust_z"] = (df["amount_bdt"] - prior_median) / (prior_mad + EPS)
 
+    # log-amount z-score: amount is heavily right-skewed (fraud amounts run
+    # to ~5x the legit max), so a z-score on log1p(amount) is better-behaved
+    # than the linear-scale z-score above -- kept alongside it, not instead.
+    if "log_amount_bdt" not in df.columns:
+        df["log_amount_bdt"] = np.log1p(df["amount_bdt"])
+    log_prior_count, log_prior_sum, log_prior_sumsq = _prior_count_sum_sumsq(df, entity_col, "log_amount_bdt")
+    log_prior_mean = log_prior_sum / log_prior_count.replace(0, np.nan)
+    log_prior_var = (log_prior_sumsq / log_prior_count.replace(0, np.nan)) - log_prior_mean ** 2
+    log_prior_std = np.sqrt(log_prior_var.clip(lower=0))
+    df[f"{prefix}_log_amt_zscore"] = (df["log_amount_bdt"] - log_prior_mean) / (log_prior_std + EPS)
+
     # time since this entity's previous transaction
     ts_epoch = df[TIME_COL].astype("int64") // 10 ** 9
     prev_ts = ts_epoch.groupby(df[entity_col]).shift(1)
@@ -142,6 +153,11 @@ class _UnionFind:
     snapshot. Still the same underlying idea PLAN.md scoped (bipartite
     connected components on customer-device / customer-merchant graphs),
     just applied incrementally rather than as one static scipy call.
+
+    Kept despite scripts/02_cv_eval.py showing no measurable CV benefit
+    (mean 0.6923 -> 0.6929, inside the noise floor) -- team decision to
+    retain it for the write-up / in case a different fold split shows more
+    signal, rather than delete unproven-but-harmless code.
     """
 
     def __init__(self, n: int):
@@ -223,6 +239,10 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     df = add_trailing_window_features(df, "customer_id", "cust", windows_hours=(1, 24))
     df = add_trailing_window_features(df, "merchant_id", "merch", windows_hours=(1, 24))
     df = add_trailing_window_features(df, "device_id", "dev", windows_hours=(1, 24))
+
+    # is-new-location-for-customer: same novelty pattern as device/merchant,
+    # confirmed compliant and worthwhile signal by an independent teardown.
+    df = add_pair_novelty_features(df, "customer_id", "location", "location_for_customer")
 
     # Stretch goal (PLAN.md): second-order relationship/cluster features.
     df = add_bipartite_component_features(df, "customer_id", "device_id", "cd")

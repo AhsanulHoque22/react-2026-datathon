@@ -12,3 +12,4 @@ submissions/*.csv
 .env
 kaggle.json
 data/*.csv
+catboost_info/
