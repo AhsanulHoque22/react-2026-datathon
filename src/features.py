@@ -69,6 +69,14 @@ def add_entity_expanding_features(df: pd.DataFrame, entity_col: str, prefix: str
     prior_median, prior_mad = _prior_median_mad(df, entity_col, "amount_bdt", prior_count)
     df[f"{prefix}_amt_robust_z"] = (df["amount_bdt"] - prior_median) / (prior_mad + EPS)
 
+    # amount ratio to the entity's own prior mean. Distinct from the z-scores
+    # above: those divide by std/MAD (spread), this divides by the mean
+    # (level). An independent teardown found this the single highest-gain
+    # feature in the dataset -- steep, non-linear response (5-10x the
+    # customer's own mean is a different regime from 50x+).
+    df[f"{prefix}_amt_ratio"] = df["amount_bdt"] / (prior_mean + EPS)
+    df[f"{prefix}_log_amt_ratio"] = np.log1p(df[f"{prefix}_amt_ratio"].clip(lower=0))
+
     # log-amount z-score: amount is heavily right-skewed (fraud amounts run
     # to ~5x the legit max), so a z-score on log1p(amount) is better-behaved
     # than the linear-scale z-score above -- kept alongside it, not instead.
@@ -84,6 +92,10 @@ def add_entity_expanding_features(df: pd.DataFrame, entity_col: str, prefix: str
     ts_epoch = df[TIME_COL].astype("int64") // 10 ** 9
     prev_ts = ts_epoch.groupby(df[entity_col]).shift(1)
     df[f"{prefix}_seconds_since_last"] = ts_epoch - prev_ts
+    # log-scale gap: the burst signal is steep and short (sub-minute gaps
+    # behave very differently from hour-plus gaps), so log spreads out the
+    # region that actually carries signal instead of compressing it.
+    df[f"{prefix}_log_seconds_since_last"] = np.log1p(df[f"{prefix}_seconds_since_last"])
 
     return df
 
@@ -99,14 +111,36 @@ def add_pair_novelty_features(df: pd.DataFrame, col_a: str, col_b: str, name: st
 
     df[f"is_new_{name}"] = is_first_pair.astype("int8")
     df[f"{col_a}_nunique_{name}_prior"] = nunique_prior
+
+    # Stationary companion: distinct counterparties as a SHARE of this
+    # entity's own prior transactions. The raw count saturates over time
+    # (measured: "device shared with >3 customers" fires on 5.7% of rows in
+    # January but 91.7% by July, at which point its fraud lift is ~0.9 --
+    # i.e. the feature has decayed into noise). The share stays comparable
+    # across periods: "this device sees a new customer on most of its
+    # transactions" means the same thing in January and July.
+    prior_txn_count = df.groupby(col_a).cumcount().astype("float64")
+    df[f"{col_a}_nunique_{name}_share_prior"] = nunique_prior / np.maximum(prior_txn_count, 1.0)
     return df
 
 
 def add_frequency_encoding(df: pd.DataFrame, cat_cols) -> pd.DataFrame:
-    """Strictly-past expanding frequency (count, not rate) of each category value."""
+    """Strictly-past expanding frequency of each category value, as a
+    PROPORTION of all rows seen so far rather than a raw running count.
+
+    The raw count was non-stationary by construction: it only grows, so
+    "transaction_type_freq_prior > 50000" is really a disguised timestamp,
+    and test-period values sit far outside the range seen in training
+    (measured PSI 9.27 for transaction_type, 5.63 payment_method, 5.40
+    device_type -- among the worst drifters in the whole feature set).
+    The share-of-traffic version carries the same information about how
+    common a category is, but is scale-invariant across periods.
+    """
+    rows_so_far = np.arange(len(df), dtype="float64")  # rows strictly before row i
     for col in cat_cols:
         filled = df[col].fillna("__missing__")
-        df[f"{col}_freq_prior"] = filled.groupby(filled).cumcount().astype("float64")
+        prior_count = filled.groupby(filled).cumcount().astype("float64")
+        df[f"{col}_freq_share_prior"] = prior_count / np.maximum(rows_so_far, 1.0)
     return df
 
 
