@@ -214,10 +214,15 @@ def main():
                          prepare_lgb_frame(va, feature_cols, cat_cols), va[LABEL_COL].astype(int))
         print(f"{wname}: train={len(tr)} valid={len(va)} frauds={int(va[LABEL_COL].sum())}", flush=True)
 
+    # Stage 2: lr/leaves are now fixed at the stage-1 winner (0.02/127).
+    # Sweep the knobs stage 1 held constant -- these control how much each
+    # tree can memorise, which matters more now that we train ~940 rounds
+    # instead of ~140.
     CONFIGS = []
-    for lr in (0.10, 0.05, 0.02, 0.01):
-        for leaves in (31, 63, 127):
-            CONFIGS.append(dict(learning_rate=lr, num_leaves=leaves))
+    for mdl in (20, 50, 200, 500):
+        for ff in (0.5, 0.7, 0.85):
+            CONFIGS.append(dict(learning_rate=0.02, num_leaves=127,
+                                min_data_in_leaf=mdl, feature_fraction=ff))
 
     results = []
     for cfg in CONFIGS:
@@ -226,9 +231,8 @@ def main():
             aps, iters = [], []
             for seed in (0, 1, 2):
                 params = dict(objective="binary", metric="None", verbosity=-1,
-                              feature_fraction=0.85, bagging_fraction=0.85, bagging_freq=1,
-                              min_data_in_leaf=50, seed=seed, bagging_seed=seed,
-                              feature_fraction_seed=seed, **cfg)
+                              bagging_fraction=0.85, bagging_freq=1, seed=seed,
+                              bagging_seed=seed, feature_fraction_seed=seed, **cfg)
                 ds_tr = lgb.Dataset(X_tr, label=y_tr, categorical_feature=cat_cols, free_raw_data=False)
                 ds_va = lgb.Dataset(X_va, label=y_va, categorical_feature=cat_cols,
                                     reference=ds_tr, free_raw_data=False)
@@ -241,7 +245,7 @@ def main():
             row[f"{wname}_mean"] = float(np.mean(aps))
             row[f"{wname}_std"] = float(np.std(aps))
             row[f"{wname}_iter"] = int(np.mean(iters))
-            print(f"lr={cfg['learning_rate']:<5} leaves={cfg['num_leaves']:<4} {wname}: "
+            print(f"mdl={cfg['min_data_in_leaf']:<4} ff={cfg['feature_fraction']:<5} {wname}: "
                   f"{np.mean(aps):.4f} +/- {np.std(aps):.4f} (iter~{int(np.mean(iters))}) "
                   f"[{time.time()-t0:.0f}s]", flush=True)
         results.append(row)
@@ -250,6 +254,101 @@ def main():
     print("\\n=== SWEEP RESULTS (sorted by tail window, the leaderboard proxy) ===")
     print(res.to_string(index=False))
     res.to_csv(OUT_DIR / "sweep_results.csv", index=False)
+
+
+if __name__ == "__main__":
+    main()
+'''
+
+
+EXP2_MAIN = '''
+
+# --------- recency asymmetry + ensemble blending experiments ---------------
+def main():
+    t0 = time.time()
+    train = pd.read_csv(TRAIN_CSV, parse_dates=[TIME_COL])
+    test = pd.read_csv(TEST_CSV, parse_dates=[TIME_COL])
+    df = build_combined_frame(train, test)
+    assert_frame_sane(df)
+    del train, test
+    gc.collect()
+    df = build_features(df)
+    feature_cols, cat_cols = get_feature_columns(df)
+    labeled = df[~df["is_test"]]
+    del df
+    gc.collect()
+    print(f"featurized, {len(feature_cols)} features ({time.time()-t0:.0f}s)", flush=True)
+
+    # EXPERIMENT A -- recency weighting, tested FAIRLY this time.
+    # The earlier test validated on Jul 2-15 while training on data ending
+    # Jul 2, i.e. entirely BEFORE the regime change -- there was no
+    # post-change data to weight toward, so it could not have helped. Here
+    # the split is Jul 8: training now contains ~1 week of post-change data,
+    # which mirrors the real submission (trains through Jul 15, predicts
+    # Jul 16+). This is the only configuration where recency weighting has
+    # a mechanism to work.
+    split = pd.Timestamp("2026-07-08")
+    tr = labeled.loc[labeled[TIME_COL] < split]
+    va = labeled.loc[labeled[TIME_COL] >= split]
+    X_tr, y_tr = prepare_lgb_frame(tr, feature_cols, cat_cols), tr[LABEL_COL].astype(int)
+    X_va, y_va = prepare_lgb_frame(va, feature_cols, cat_cols), va[LABEL_COL].astype(int)
+    print(f"\\nEXP A split Jul08: train={len(tr)} valid={len(va)} "
+          f"frauds={int(y_va.sum())}", flush=True)
+
+    days_before = (tr[TIME_COL].max() - tr[TIME_COL]).dt.total_seconds().values / 86400.0
+
+    def run_weighted(half_life, tag):
+        aps = []
+        for seed in (0, 1, 2):
+            w = None if half_life is None else np.exp(-np.log(2) / half_life * days_before)
+            params = dict(objective="binary", metric="None", verbosity=-1,
+                          learning_rate=0.05, num_leaves=63, feature_fraction=0.85,
+                          bagging_fraction=0.85, bagging_freq=1, min_data_in_leaf=50,
+                          seed=seed, bagging_seed=seed, feature_fraction_seed=seed)
+            ds_tr = lgb.Dataset(X_tr, label=y_tr, weight=w, categorical_feature=cat_cols, free_raw_data=False)
+            ds_va = lgb.Dataset(X_va, label=y_va, categorical_feature=cat_cols, reference=ds_tr, free_raw_data=False)
+            bst = lgb.train(params, ds_tr, num_boost_round=4000, valid_sets=[ds_va],
+                            feval=make_pr_auc_feval(y_va.values, seed=seed),
+                            callbacks=[lgb.early_stopping(200, verbose=False), lgb.log_evaluation(period=0)])
+            aps.append(average_precision_score(y_va, bst.predict(X_va, num_iteration=bst.best_iteration)))
+        print(f"  {tag:32s} {np.mean(aps):.4f} +/- {np.std(aps):.4f}  [{time.time()-t0:.0f}s]", flush=True)
+        return float(np.mean(aps))
+
+    print("EXPERIMENT A: recency weighting with post-change data in train")
+    run_weighted(None, "no weighting")
+    for hl in (7, 14, 30, 60):
+        run_weighted(hl, f"exp decay half-life={hl}d")
+
+    # EXPERIMENT B -- ensemble blending. Research says rank-averaging beats
+    # probability-averaging for rank metrics because it ignores calibration
+    # differences between models. Worth checking directly rather than assuming.
+    print("\\nEXPERIMENT B: ensemble blending (rank vs probability averaging)")
+    CONFIGS = [dict(learning_rate=0.05, num_leaves=63, feature_fraction=0.85),
+               dict(learning_rate=0.02, num_leaves=127, feature_fraction=0.7),
+               dict(learning_rate=0.1, num_leaves=31, feature_fraction=0.95)]
+    preds, singles = [], []
+    for i, cfg in enumerate(CONFIGS):
+        params = dict(objective="binary", metric="None", verbosity=-1,
+                      bagging_fraction=0.85, bagging_freq=1, min_data_in_leaf=50,
+                      seed=i, bagging_seed=i, feature_fraction_seed=i, **cfg)
+        ds_tr = lgb.Dataset(X_tr, label=y_tr, categorical_feature=cat_cols, free_raw_data=False)
+        ds_va = lgb.Dataset(X_va, label=y_va, categorical_feature=cat_cols, reference=ds_tr, free_raw_data=False)
+        bst = lgb.train(params, ds_tr, num_boost_round=4000, valid_sets=[ds_va],
+                        feval=make_pr_auc_feval(y_va.values, seed=i),
+                        callbacks=[lgb.early_stopping(200, verbose=False), lgb.log_evaluation(period=0)])
+        p = bst.predict(X_va, num_iteration=bst.best_iteration)
+        preds.append(p)
+        ap = average_precision_score(y_va, p)
+        singles.append(ap)
+        print(f"  model {i} {cfg} -> {ap:.4f}", flush=True)
+
+    P = np.vstack(preds)
+    prob_avg = P.mean(axis=0)
+    ranks = np.vstack([pd.Series(p).rank(pct=True).values for p in preds])
+    rank_avg = ranks.mean(axis=0)
+    print(f"  best single         : {max(singles):.4f}")
+    print(f"  probability average : {average_precision_score(y_va, prob_avg):.4f}")
+    print(f"  RANK average        : {average_precision_score(y_va, rank_avg):.4f}", flush=True)
 
 
 if __name__ == "__main__":
@@ -269,14 +368,15 @@ def main():
         parts.append(f"\n# ===================== src/{m} =====================\n{body}\n")
 
     parts.append('\nSEEDS = [0, 1, 2, 3, 4]\nFINAL_PARAMS = dict(\n'
-                 '    objective="binary", metric="None", verbosity=-1, learning_rate=0.05,\n'
-                 '    num_leaves=63, feature_fraction=0.85, bagging_fraction=0.85,\n'
+                 '    objective="binary", metric="None", verbosity=-1, learning_rate=0.02,\n'
+                 '    num_leaves=127, feature_fraction=0.85, bagging_fraction=0.85,\n'
                  '    bagging_freq=1, min_data_in_leaf=50,\n)\n')
     common = "".join(parts)
 
     for dirname, slug, title, filename, body in [
         ("kaggle_kernel", "react-2026-pipeline", "REACT 2026 Pipeline", "react_pipeline.py", MAIN),
         ("kaggle_sweep", "react-2026-sweep", "REACT 2026 Sweep", "react_sweep.py", SWEEP_MAIN),
+        ("kaggle_exp2", "react-2026-exp2", "REACT 2026 Exp2", "react_exp2.py", EXP2_MAIN),
     ]:
         d = ROOT / dirname
         d.mkdir(exist_ok=True)

@@ -454,8 +454,14 @@ def train_lgb(X_train, y_train, X_valid, y_valid, cat_cols, seed: int = SEED):
         bagging_seed=seed,
         feature_fraction_seed=seed,
         verbosity=-1,
-        learning_rate=0.05,
-        num_leaves=63,
+        # Re-swept on Kaggle under spw=1 (the original sweep ran under spw=55
+        # and every conclusion it drew was void). lr=0.02/leaves=127 scored
+        # 0.5230 +/- 0.0006 on the Jul01-15 tail vs 0.5195 +/- 0.0012 for the
+        # old lr=0.05/leaves=63 -- and also wins on fold2, so it is not
+        # trading away the easy regime. Removing the class weighting shifted
+        # the optimum toward a slower rate with many more trees (~940 vs ~140).
+        learning_rate=0.02,
+        num_leaves=127,
         feature_fraction=0.85,
         bagging_fraction=0.85,
         bagging_freq=1,
@@ -473,7 +479,10 @@ def train_lgb(X_train, y_train, X_valid, y_valid, cat_cols, seed: int = SEED):
         num_boost_round=3000,
         valid_sets=[valid_set],
         feval=feval,
-        callbacks=[lgb.early_stopping(stopping_rounds=100, verbose=False), lgb.log_evaluation(period=0)],
+        # patience 200 to match the sweep that selected lr=0.02: at this slower
+        # rate the curve improves in longer, flatter stretches and 100 rounds
+        # of patience cuts it off early.
+        callbacks=[lgb.early_stopping(stopping_rounds=200, verbose=False), lgb.log_evaluation(period=0)],
     )
     return booster
 
@@ -491,8 +500,8 @@ def precision_recall_at_k(y_true, y_score, k_frac):
 
 SEEDS = [0, 1, 2, 3, 4]
 FINAL_PARAMS = dict(
-    objective="binary", metric="None", verbosity=-1, learning_rate=0.05,
-    num_leaves=63, feature_fraction=0.85, bagging_fraction=0.85,
+    objective="binary", metric="None", verbosity=-1, learning_rate=0.02,
+    num_leaves=127, feature_fraction=0.85, bagging_fraction=0.85,
     bagging_freq=1, min_data_in_leaf=50,
 )
 
@@ -533,10 +542,15 @@ def main():
                          prepare_lgb_frame(va, feature_cols, cat_cols), va[LABEL_COL].astype(int))
         print(f"{wname}: train={len(tr)} valid={len(va)} frauds={int(va[LABEL_COL].sum())}", flush=True)
 
+    # Stage 2: lr/leaves are now fixed at the stage-1 winner (0.02/127).
+    # Sweep the knobs stage 1 held constant -- these control how much each
+    # tree can memorise, which matters more now that we train ~940 rounds
+    # instead of ~140.
     CONFIGS = []
-    for lr in (0.10, 0.05, 0.02, 0.01):
-        for leaves in (31, 63, 127):
-            CONFIGS.append(dict(learning_rate=lr, num_leaves=leaves))
+    for mdl in (20, 50, 200, 500):
+        for ff in (0.5, 0.7, 0.85):
+            CONFIGS.append(dict(learning_rate=0.02, num_leaves=127,
+                                min_data_in_leaf=mdl, feature_fraction=ff))
 
     results = []
     for cfg in CONFIGS:
@@ -545,9 +559,8 @@ def main():
             aps, iters = [], []
             for seed in (0, 1, 2):
                 params = dict(objective="binary", metric="None", verbosity=-1,
-                              feature_fraction=0.85, bagging_fraction=0.85, bagging_freq=1,
-                              min_data_in_leaf=50, seed=seed, bagging_seed=seed,
-                              feature_fraction_seed=seed, **cfg)
+                              bagging_fraction=0.85, bagging_freq=1, seed=seed,
+                              bagging_seed=seed, feature_fraction_seed=seed, **cfg)
                 ds_tr = lgb.Dataset(X_tr, label=y_tr, categorical_feature=cat_cols, free_raw_data=False)
                 ds_va = lgb.Dataset(X_va, label=y_va, categorical_feature=cat_cols,
                                     reference=ds_tr, free_raw_data=False)
@@ -560,7 +573,7 @@ def main():
             row[f"{wname}_mean"] = float(np.mean(aps))
             row[f"{wname}_std"] = float(np.std(aps))
             row[f"{wname}_iter"] = int(np.mean(iters))
-            print(f"lr={cfg['learning_rate']:<5} leaves={cfg['num_leaves']:<4} {wname}: "
+            print(f"mdl={cfg['min_data_in_leaf']:<4} ff={cfg['feature_fraction']:<5} {wname}: "
                   f"{np.mean(aps):.4f} +/- {np.std(aps):.4f} (iter~{int(np.mean(iters))}) "
                   f"[{time.time()-t0:.0f}s]", flush=True)
         results.append(row)
