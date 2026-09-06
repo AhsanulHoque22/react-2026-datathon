@@ -1,6 +1,6 @@
 # REACT 2026 Datathon — Team Status Dashboard
 
-Last updated: **2026-09-06 16:15 Dhaka** · deadline **2026-09-07 23:59:59 Dhaka** (~31.7h left)
+Last updated: **2026-09-06 18:30 Dhaka** · deadline **2026-09-07 23:59:59 Dhaka** (~29.5h left)
 
 > Modeling plan and rationale: [`PLAN.md`](./PLAN.md) · Onboarding tasks: [`TEAM_TASKS.md`](./TEAM_TASKS.md)
 
@@ -100,7 +100,7 @@ test window.
 | Recency weighting | Dead. Retested *fairly* (post-change data in train): hurts monotonically — none 0.5449, 60d 0.5401, 30d 0.5361, 14d 0.5334, 7d 0.5308 |
 | Ensembling / rank-averaging | Nothing: best single 0.5467, prob-avg 0.5473, rank-avg 0.5474 — all inside noise |
 | Isotonic calibration | Cut — cannot help a rank metric, can hurt via tie-collapsing |
-| Graph/cluster features | Net-neutral; kept by team decision, not because they help |
+| Graph/cluster features | Net-neutral across every test; **dropped** in the final arm C on parsimony (removing them cost −0.0004, i.e. nothing) |
 | Log-transform duplicates | Removed — trees are invariant to monotonic transforms; they only stole `feature_fraction` slots |
 
 ## Local scores — current standing (all Kaggle-run, 3 seeds each)
@@ -111,8 +111,41 @@ Seed-noise std is **0.0020**, so anything under ~0.004 is not a result.
 | Configuration | fold3 | tail (Jul 1–15) | fold2 (guard) |
 |---|---|---|---|
 | Previous best (`lr=0.05/63`) — **the 0.53948 submission** | 0.5133 | 0.5204 | 0.7919 |
-| **Swept (`lr=0.02/127`)** | **0.5158** | **0.5233** | 0.7932 |
+| Swept (`lr=0.02/127`) | 0.5158 | 0.5233 | 0.7932 |
 | Swept + 17 self-relative features | — | 0.5233 | 0.7950 |
+| **Arm C — swept + all Phase-3 feats − graph** | — | **0.5252** | 0.7930 |
+
+### Aggregation run (`react-2026-final`) — 3 arms × 4 windows × 3 seeds
+
+| Arm | Jun25–Jul02 | Jul02–Jul08 | Jul08–Jul16 | fold2-guard | recent mean |
+|---|---|---|---|---|---|
+| A — prev best (`lr.05/63`, old feats) | 0.7704 | 0.4862 | 0.5419 | 0.7908 | 0.5995 |
+| B — new feats (`lr.02/127`) | 0.7708 | 0.4935 | 0.5474 | 0.7935 | 0.6039 |
+| **C — B minus graph features** | 0.7701 | **0.4943** | **0.5484** | 0.7930 | **0.6043** |
+
+All ± are ≤0.003. Both B and C clear the acceptance rule against A
+(+0.0044 / +0.0047 recent-mean, no window worse than −0.0004). **B vs C is
++0.0004 — noise**; C was taken because it is the smaller model, not because
+graph features were shown to hurt. That is consistent with every prior graph
+measurement: net-neutral. They are now dropped on parsimony.
+
+Winner refit on the full window: **held-out Jul 1–15 = 0.5252, 967 rounds**.
+Archived as `submissions/CANDIDATE_C_nograph_0.5252.csv` — verified 262,648
+rows, order matches `sample_submission.csv`, 0 NaN, range [0.00016, 0.99995].
+Rank overlap with the 0.53948 submission is 77% at top-1k and 91% at top-3k
+(global Spearman is only 0.49, but that is tail reshuffling among near-zero
+rows and does not touch PR-AUC). **Not submitted.**
+
+Net gain over the live submission's configuration: **+0.0048 on the Jul 1–15
+tail**, ~2.4× the 0.0020 seed-noise std.
+
+**Caveat on attribution:** arm C differs from A in *two* ways at once —
+hyperparameters and the 85 new Phase-3 features — so the +0.0047 is the
+combined effect, not the features' own. Decomposed against the isolated sweep
+result (tail 0.5204 → 0.5233), hyperparameters carry ~+0.0029 and the feature
+block ~+0.0019. The feature half alone is under the noise floor; it is only
+credible because it holds the same sign across three independent recent
+windows, which is what the acceptance rule was written to catch.
 
 ### Confirmed wins
 - **Swept hyperparameters** `lr=0.02, num_leaves=127`: tail 0.5204 → **0.5233**,
@@ -150,12 +183,11 @@ features. Counts/sums now zero-fill; ratios correctly stay NaN.
 
 ## In flight (Kaggle, all compute runs there now)
 
+`react-2026-final` **completed** — results above.
+
 - **`react-2026-sweep`** (stage 2) — `min_data_in_leaf` × `feature_fraction` at
   the new lr/leaves, which stage 1 held fixed and which matter more now that
   we train ~940 rounds instead of ~140.
-- **`react-2026-final`** — the aggregation run: three arms (previous best / new
-  Phase 3 features / new-minus-graph) across four recent windows × 3 seeds,
-  judged by the plan's acceptance rule, then trains the winner.
 - **`react-2026-horizon`** — forecast-horizon decay. We tune rounds on Jul 1–15
   (1–15 days ahead) but the test runs to **62 days** past training. Holds the
   validation window fixed and walks the training cutoff back (gaps 0→60 days)
