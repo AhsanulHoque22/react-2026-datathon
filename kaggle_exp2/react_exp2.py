@@ -535,6 +535,92 @@ def leakage_assertions(df: pd.DataFrame):
         "leak: a customer's first transaction should always be a new device pairing"
     )
 
+
+def population_psi(df: pd.DataFrame, cols, early: tuple, late: tuple, bins: int = 10) -> pd.Series:
+    """Population Stability Index of each column between an early and a late
+    window, computed on TRAIN rows only (never test -- the organizer bans
+    fitting anything to test.csv, and we keep well clear of the line).
+
+    High PSI means the feature's own distribution moved under us, so a split
+    threshold learned in January means something different in July. Those are
+    exactly the features worth replacing with a drift-free encoding."""
+    t = df[TIME_COL]
+    a = df.loc[(t >= pd.Timestamp(early[0])) & (t < pd.Timestamp(early[1]))]
+    b = df.loc[(t >= pd.Timestamp(late[0])) & (t < pd.Timestamp(late[1]))]
+    out = {}
+    for c in cols:
+        x, y = a[c].to_numpy(dtype="float64"), b[c].to_numpy(dtype="float64")
+        x, y = x[~np.isnan(x)], y[~np.isnan(y)]
+        if len(x) < 100 or len(y) < 100:
+            out[c] = 0.0
+            continue
+        # quantile edges from the EARLY window: PSI asks how far the late
+        # window drifted out of the reference bins, so the reference defines them.
+        edges = np.unique(np.quantile(x, np.linspace(0, 1, bins + 1)))
+        if len(edges) < 3:
+            out[c] = 0.0
+            continue
+        edges[0], edges[-1] = -np.inf, np.inf
+        px = np.histogram(x, bins=edges)[0] / len(x)
+        py = np.histogram(y, bins=edges)[0] / len(y)
+        px, py = np.clip(px, 1e-6, None), np.clip(py, 1e-6, None)
+        out[c] = float(np.sum((py - px) * np.log(py / px)))
+    return pd.Series(out).sort_values(ascending=False)
+
+
+def add_time_local_percentiles(df: pd.DataFrame, cols, window_days: int = 14,
+                               suffix: str = "_pct") -> pd.DataFrame:
+    """Replace a raw value with its percentile among the same feature's values
+    over the PRECEDING `window_days` of all traffic.
+
+    This is the drift fix. "Device shared with >3 customers" fired on 5.7% of
+    January rows and 91.7% of July rows -- the same raw threshold meant
+    "unusual" in January and "typical" in July. A percentile against the recent
+    population re-centres automatically: the feature keeps meaning "unusual for
+    right now" no matter how the population moves underneath it.
+
+    Leakage-safe by construction: day d is scored against days [d-window, d-1]
+    only, so neither the row's own value nor anything from its own day enters
+    its reference distribution. Runs on the combined train+test frame on
+    purpose -- test rows must be re-centred against *their* recent population,
+    which is the entire point, and it uses no labels."""
+    day_codes = pd.factorize(df[TIME_COL].dt.floor("D"), sort=True)[0]
+    n_days = int(day_codes.max()) + 1
+    order = np.argsort(day_codes, kind="stable")
+    sorted_codes = day_codes[order]
+    starts = np.searchsorted(sorted_codes, np.arange(n_days), side="left")
+    ends = np.searchsorted(sorted_codes, np.arange(n_days), side="right")
+    day_rows = [order[starts[d]:ends[d]] for d in range(n_days)]
+
+    # Hoisted out of the column loop: building each day's reference index once
+    # instead of once per feature is the difference between seconds and minutes.
+    ref_rows = []
+    for d in range(n_days):
+        lo = max(0, d - window_days)
+        ref_rows.append(np.concatenate(day_rows[lo:d]) if d > lo else np.empty(0, dtype=np.intp))
+
+    new_cols = {}
+    for c in cols:
+        v = df[c].to_numpy(dtype="float64")
+        res = np.full(len(v), np.nan)
+        for d in range(n_days):
+            cur, ref_idx = day_rows[d], ref_rows[d]
+            if len(cur) == 0 or len(ref_idx) == 0:
+                continue
+            ref = v[ref_idx]
+            ref = ref[~np.isnan(ref)]
+            if len(ref) == 0:
+                continue
+            ref.sort()
+            cv = v[cur]
+            p = np.searchsorted(ref, cv, side="left") / len(ref)
+            # searchsorted sends NaN to the far end; that would read as the
+            # 100th percentile rather than "unknown". Put it back.
+            p[np.isnan(cv)] = np.nan
+            res[cur] = p
+        new_cols[c + suffix] = res
+    return pd.concat([df, pd.DataFrame(new_cols, index=df.index)], axis=1)
+
 # ===================== src/model.py =====================
 CAT_COLS = ["merchant_category", "device_type", "location", "payment_method", "transaction_type"]
 # log_amount_bdt is a helper column for the log-space z-scores, not a model

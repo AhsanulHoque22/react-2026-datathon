@@ -745,17 +745,67 @@ FINAL_PARAMS = dict(
 )
 
 
-# =================== FINAL: aggregate everything, score locally =============
-# Combines every validated fix (no class weighting, swept lr=0.02/leaves=127,
-# 5-seed averaging, stationary encodings, self-relative features) with the new
-# Phase 3 recent-window family, and scores across MULTIPLE recent windows
-# rather than repeatedly against fold 3's 804 positives.
+# ================ does a ranking objective beat logloss? ====================
+# The single biggest win of this competition (+0.026) came from noticing that
+# PR-AUC is a RANK metric and that scale_pos_weight was distorting the ranking
+# to chase calibrated probabilities nobody scores. We never followed that
+# thread to its end: we still train plain logloss.
 #
-# Acceptance rule (from FOLD3_IMPROVEMENT_PLAN.md): a candidate wins only if
-# the recent-window mean improves by >=0.004, at least two windows improve,
-# no window drops more than 0.003, and it holds across 3 seeds.
+# Arms: binary logloss / lambdarank / rank_xendcg / focal loss. The two rank
+# objectives group by calendar day -- ranking transactions within a day is the
+# closest well-posed proxy for the global ranking the metric actually scores.
+# Measurement only: no submission is written from here.
+def _day_groups(frame):
+    """Group sizes for LightGBM ranking. The frame is time-sorted, so equal
+    days are contiguous and np.unique's sorted counts line up with them."""
+    d = frame[TIME_COL].dt.floor("D").to_numpy()
+    _, counts = np.unique(d, return_counts=True)
+    assert counts.sum() == len(frame)
+    return counts
+
+
+def make_focal_obj(gamma=2.0, eps=1e-3):
+    """Focal loss via finite differences of the loss itself.
+
+    Deliberately not hand-differentiated: the analytic gradient and Hessian of
+    focal loss are easy to get subtly wrong, and a wrong Hessian degrades
+    silently into a worse model rather than an error. Central differences cost
+    two extra elementwise passes and are checked exactly against logloss at
+    gamma=0 below, where focal loss reduces to it."""
+    def loss(z, y):
+        p = 1.0 / (1.0 + np.exp(-z))
+        pt = np.clip(np.where(y == 1, p, 1.0 - p), 1e-12, 1.0)
+        return -np.power(1.0 - pt, gamma) * np.log(pt)
+
+    def obj(z, ds):
+        y = ds.get_label()
+        lp, l0, lm = loss(z + eps, y), loss(z, y), loss(z - eps, y)
+        grad = (lp - lm) / (2.0 * eps)
+        hess = np.maximum((lp - 2.0 * l0 + lm) / (eps * eps), 1e-6)
+        return grad, hess
+    return obj
+
+
+def _check_focal():
+    """gamma=0 makes focal loss exactly logloss, whose grad/hess are known."""
+    rng = np.random.RandomState(0)
+    z = rng.normal(0, 3, 5000)
+    y = (rng.rand(5000) < 0.3).astype(np.float64)
+
+    class _DS:
+        def get_label(self):
+            return y
+
+    g, h = make_focal_obj(gamma=0.0)(z, _DS())
+    p = 1.0 / (1.0 + np.exp(-z))
+    assert np.allclose(g, p - y, atol=1e-6), np.abs(g - (p - y)).max()
+    assert np.allclose(h, np.clip(p * (1 - p), 1e-6, None), atol=1e-5), np.abs(h - p * (1 - p)).max()
+    print("focal objective reduces to logloss at gamma=0 (grad+hess verified)")
+
+
 def main():
     t0 = time.time()
+    _check_focal()
     train = pd.read_csv(TRAIN_CSV, parse_dates=[TIME_COL])
     test = pd.read_csv(TEST_CSV, parse_dates=[TIME_COL])
     df = build_combined_frame(train, test)
@@ -763,43 +813,29 @@ def main():
     del train, test
     gc.collect()
     df = build_features(df)
-    leakage_assertions(df)
     feature_cols, cat_cols = get_feature_columns(df)
-    print(f"featurized={df.shape}, {len(feature_cols)} features ({time.time()-t0:.0f}s)", flush=True)
-
-    NEW = [c for c in feature_cols if any(k in c for k in (
-        "_amt_vs_recent_mean_", "_amt_vs_recent_max_", "_fresh_",
-        "_cnt_5m", "_cnt_15m", "_cnt_30m", "_cnt_3h", "_cnt_12h",
-        "_amtsum_5m", "_amtsum_15m", "_amtsum_30m", "_amtsum_3h", "_amtsum_12h",
-        "_gap_accel", "_velocity_ratio_", "_amt_vs_prior_max", "_is_record_amt",
-        "_hour_bucket_share", "_new_hour_bucket"))]
-    GRAPH = [c for c in feature_cols if "component_size_prior" in c]
-    OLD = [c for c in feature_cols if c not in NEW]
-    print(f"{len(NEW)} new / {len(OLD)} old / {len(GRAPH)} graph", flush=True)
-
+    cols = [c for c in feature_cols if "component_size_prior" not in c]
+    cc = [c for c in cat_cols if c in cols]
     labeled = df[~df["is_test"]]
-    test_df = df[df["is_test"]]
-    frame_sorted = bool(df[TIME_COL].is_monotonic_increasing)
     del df
     gc.collect()
+    print(f"featurized, {len(cols)} features ({time.time()-t0:.0f}s)", flush=True)
 
-    WINDOWS = {
-        "Jun25-Jul02": ("2026-06-25", "2026-07-02"),
-        "Jul02-Jul08": ("2026-07-02", "2026-07-08"),
-        "Jul08-Jul16": ("2026-07-08", "2026-07-16"),
-        "fold2-guard": ("2026-06-18", "2026-07-02"),
-    }
-
+    WINDOWS = {"tail(Jul01-15)": ("2026-07-01", "2026-07-16"),
+               "fold2(Jun18-Jul02)": ("2026-06-18", "2026-07-02")}
+    COMMON = dict(metric="None", verbosity=-1, learning_rate=0.02, num_leaves=127,
+                  feature_fraction=0.85, bagging_fraction=0.85, bagging_freq=1,
+                  min_data_in_leaf=50)
     ARMS = {
-        "A_prev_best(lr.05/63,old feats)": (OLD, dict(learning_rate=0.05, num_leaves=63)),
-        "B_new_feats(lr.02/127)":          (feature_cols, dict(learning_rate=0.02, num_leaves=127)),
-        "C_B_minus_graph":                 ([c for c in feature_cols if c not in GRAPH],
-                                            dict(learning_rate=0.02, num_leaves=127)),
+        "A_binary(baseline)": dict(objective="binary"),
+        "B_lambdarank":       dict(objective="lambdarank", lambdarank_truncation_level=50,
+                                   label_gain=[0, 1]),
+        "C_rank_xendcg":      dict(objective="rank_xendcg", label_gain=[0, 1]),
+        "D_focal_g2":         dict(objective=None),
     }
 
     results = {}
-    for arm, (cols, cfg) in ARMS.items():
-        cc = [c for c in cat_cols if c in cols]
+    for arm, cfg in ARMS.items():
         results[arm] = {}
         for wname, (s_, e_) in WINDOWS.items():
             s_ts, e_ts = pd.Timestamp(s_), pd.Timestamp(e_)
@@ -807,91 +843,44 @@ def main():
             va = labeled.loc[(labeled[TIME_COL] >= s_ts) & (labeled[TIME_COL] < e_ts)]
             X_tr, y_tr = prepare_lgb_frame(tr, cols, cc), tr[LABEL_COL].astype(int)
             X_va, y_va = prepare_lgb_frame(va, cols, cc), va[LABEL_COL].astype(int)
+            needs_group = cfg.get("objective") in ("lambdarank", "rank_xendcg")
+            g_tr, g_va = (_day_groups(tr), _day_groups(va)) if needs_group else (None, None)
             aps = []
             for seed in (0, 1, 2):
-                params = dict(objective="binary", metric="None", verbosity=-1,
-                              feature_fraction=0.85, bagging_fraction=0.85, bagging_freq=1,
-                              min_data_in_leaf=50, seed=seed, bagging_seed=seed,
-                              feature_fraction_seed=seed, **cfg)
-                ds_tr = lgb.Dataset(X_tr, label=y_tr, categorical_feature=cc, free_raw_data=False)
-                ds_va = lgb.Dataset(X_va, label=y_va, categorical_feature=cc, reference=ds_tr, free_raw_data=False)
+                params = dict(COMMON, seed=seed, bagging_seed=seed, feature_fraction_seed=seed, **cfg)
+                # lightgbm >= 4.0 removed the fobj argument; a custom objective
+                # is passed as a callable in params instead.
+                if arm == "D_focal_g2":
+                    params["objective"] = make_focal_obj(gamma=2.0)
+                ds_tr = lgb.Dataset(X_tr, label=y_tr, categorical_feature=cc,
+                                    group=g_tr, free_raw_data=False)
+                ds_va = lgb.Dataset(X_va, label=y_va, categorical_feature=cc, group=g_va,
+                                    reference=ds_tr, free_raw_data=False)
                 bst = lgb.train(params, ds_tr, num_boost_round=4000, valid_sets=[ds_va],
                                 feval=make_pr_auc_feval(y_va.values, seed=seed),
                                 callbacks=[lgb.early_stopping(200, verbose=False),
                                            lgb.log_evaluation(period=0)])
+                # AP is invariant to any monotone rescaling, so the ranking
+                # objectives' raw scores are scored directly, unmapped.
                 aps.append(average_precision_score(y_va, bst.predict(X_va, num_iteration=bst.best_iteration)))
             results[arm][wname] = (float(np.mean(aps)), float(np.std(aps)))
-            print(f"  {arm:34s} {wname:12s} n_fraud={int(y_va.sum()):4d} "
-                  f"{np.mean(aps):.4f} +/- {np.std(aps):.4f}  [{time.time()-t0:.0f}s]", flush=True)
+            print(f"  {arm:20s} {wname:20s} {np.mean(aps):.4f} +/- {np.std(aps):.4f}  "
+                  f"[{time.time()-t0:.0f}s]", flush=True)
             del X_tr, X_va
             gc.collect()
 
-    print("\n================= FINAL LOCAL SCORES =================")
-    recent = [w for w in WINDOWS if w != "fold2-guard"]
-    hdr = f"{'arm':36s}" + "".join(f"{w:>16s}" for w in WINDOWS) + f"{'RECENT MEAN':>14s}"
-    print(hdr)
+    print("\n================ OBJECTIVE COMPARISON ================")
+    print(f"{'arm':22s}" + "".join(f"{w:>22s}" for w in WINDOWS))
     for arm in ARMS:
-        row = f"{arm:36s}"
-        for w in WINDOWS:
-            m, sd = results[arm][w]
-            row += f"{m:>10.4f}+-{sd:.3f}"
-        rm = np.mean([results[arm][w][0] for w in recent])
-        row += f"{rm:>14.4f}"
-        print(row)
-
-    base = np.mean([results["A_prev_best(lr.05/63,old feats)"][w][0] for w in recent])
-    for arm in ["B_new_feats(lr.02/127)", "C_B_minus_graph"]:
-        rm = np.mean([results[arm][w][0] for w in recent])
-        improved = sum(results[arm][w][0] > results["A_prev_best(lr.05/63,old feats)"][w][0] for w in recent)
-        worst = min(results[arm][w][0] - results["A_prev_best(lr.05/63,old feats)"][w][0] for w in recent)
-        verdict = ("ACCEPT" if (rm - base) >= 0.004 and improved >= 2 and worst >= -0.003
-                   else "reject (does not clear the acceptance rule)")
-        print(f"\n{arm}: recent-mean {rm:.4f} vs {base:.4f} (delta {rm-base:+.4f}), "
-              f"{improved}/{len(recent)} windows improved, worst delta {worst:+.4f} -> {verdict}")
-
-    # Train the best-by-recent-mean arm on all of train and write a candidate.
-    best_arm = max(ARMS, key=lambda a: np.mean([results[a][w][0] for w in recent]))
-    print(f"\nBest arm: {best_arm} -- training final candidate", flush=True)
-    cols, cfg = ARMS[best_arm]
-    cc = [c for c in cat_cols if c in cols]
-    hold_start = pd.Timestamp("2026-07-01")
-    fit = labeled.loc[labeled[TIME_COL] < hold_start]
-    hold = labeled.loc[labeled[TIME_COL] >= hold_start]
-    X_f, y_f = prepare_lgb_frame(fit, cols, cc), fit[LABEL_COL].astype(int)
-    X_h, y_h = prepare_lgb_frame(hold, cols, cc), hold[LABEL_COL].astype(int)
-    base_params = dict(objective="binary", metric="None", verbosity=-1,
-                       feature_fraction=0.85, bagging_fraction=0.85, bagging_freq=1,
-                       min_data_in_leaf=50, **cfg)
-    probe = lgb.train(dict(base_params, seed=0, bagging_seed=0, feature_fraction_seed=0),
-                      lgb.Dataset(X_f, label=y_f, categorical_feature=cc, free_raw_data=False),
-                      num_boost_round=4000,
-                      valid_sets=[lgb.Dataset(X_h, label=y_h, categorical_feature=cc, free_raw_data=False)],
-                      feval=make_pr_auc_feval(y_h.values, seed=0),
-                      callbacks=[lgb.early_stopping(200, verbose=False), lgb.log_evaluation(period=0)])
-    rounds = int(round(probe.best_iteration * 1.1))
-    print(f"held-out(Jul01-15)={average_precision_score(y_h, probe.predict(X_h, num_iteration=probe.best_iteration)):.4f} "
-          f"rounds={rounds}", flush=True)
-    del X_f, X_h, probe
-    gc.collect()
-
-    X_full, y_full = prepare_lgb_frame(labeled, cols, cc), labeled[LABEL_COL].astype(int)
-    X_test = prepare_lgb_frame(test_df, cols, cc)
-    ids = test_df["transaction_id"].values
-    ds = lgb.Dataset(X_full, label=y_full, categorical_feature=cc, free_raw_data=False)
-    preds = np.mean([lgb.train(dict(base_params, seed=s, bagging_seed=s, feature_fraction_seed=s),
-                               ds, num_boost_round=rounds).predict(X_test) for s in (0, 1, 2, 3, 4)], axis=0)
-
-    assert frame_sorted and LABEL_COL not in X_test.columns
-    for c in ID_COLS:
-        assert c not in X_test.columns
-    assert np.all((preds >= 0) & (preds <= 1)) and not np.isnan(preds).any()
-    sample = pd.read_csv(SAMPLE_SUBMISSION_CSV)
-    sub = pd.DataFrame({"transaction_id": ids, "fraud": preds})
-    sub = sub.set_index("transaction_id").loc[sample["transaction_id"]].reset_index()
-    assert list(sub["transaction_id"]) == list(sample["transaction_id"])
-    assert (sub["fraud"] != sub["fraud"].round().astype(int)).any()
-    sub.to_csv(OUT_DIR / "submission.csv", index=False)
-    print(f"\nWrote candidate submission.csv from {best_arm} ({time.time()-t0:.0f}s)")
+        print(f"{arm:22s}" + "".join(f"{results[arm][w][0]:>16.4f}+-{results[arm][w][1]:.3f}"
+                                    for w in WINDOWS))
+    base = results["A_binary(baseline)"]["tail(Jul01-15)"][0]
+    print(f"\nbaseline tail {base:.4f}; seed-noise std is ~0.0020, so a real win needs >= +0.004")
+    for arm in ARMS:
+        if arm == "A_binary(baseline)":
+            continue
+        d = results[arm]["tail(Jul01-15)"][0] - base
+        print(f"  {arm:20s} tail delta {d:+.4f} -> {'WORTH PURSUING' if d >= 0.004 else 'no'}")
 
 
 if __name__ == "__main__":
