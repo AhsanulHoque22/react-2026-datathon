@@ -415,7 +415,7 @@ def main():
         ("kaggle_prop", "react-2026-prop", "REACT 2026 Prop", "react_prop.py", PROP_MAIN),
         ("kaggle_prop2", "react-2026-prop2", "REACT 2026 Prop2", "react_prop2.py", PROP2_MAIN),
         ("kaggle_prop3", "react-2026-prop3", "REACT 2026 Prop3", "react_prop3.py", PROP3_MAIN),
-        ("kaggle_cand", "react-2026-cand", "REACT 2026 Candidate", "react_cand.py", CAND_MAIN),
+        ("kaggle_cand", "react-2026-candidate", "REACT 2026 Candidate", "react_cand.py", CAND_MAIN),
     ]:
         d = ROOT / dirname
         d.mkdir(exist_ok=True)
