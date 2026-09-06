@@ -103,14 +103,65 @@ test window.
 | Graph/cluster features | Net-neutral; kept by team decision, not because they help |
 | Log-transform duplicates | Removed — trees are invariant to monotonic transforms; they only stole `feature_fraction` slots |
 
+## Local scores — current standing (all Kaggle-run, 3 seeds each)
+
+Selection is on the **Jul 1–15 tail / fold 3**, never the 4-fold mean.
+Seed-noise std is **0.0020**, so anything under ~0.004 is not a result.
+
+| Configuration | fold3 | tail (Jul 1–15) | fold2 (guard) |
+|---|---|---|---|
+| Previous best (`lr=0.05/63`) — **the 0.53948 submission** | 0.5133 | 0.5204 | 0.7919 |
+| **Swept (`lr=0.02/127`)** | **0.5158** | **0.5233** | 0.7932 |
+| Swept + 17 self-relative features | — | 0.5233 | 0.7950 |
+
+### Confirmed wins
+- **Swept hyperparameters** `lr=0.02, num_leaves=127`: tail 0.5204 → **0.5233**,
+  fold3 0.5133 → **0.5158**. Candidate archived as
+  `submissions/CANDIDATE_swept_lr002_leaves127.csv` (verified: 262,648 rows,
+  order matches sample, no NaN, all in [0,1]). **Not submitted.**
+
+### Negative results (do not retry)
+- **Self-relative features** (gap acceleration, velocity ratios, personal-record
+  amounts, customer hour-bucket profile) — 17 features, **+0.0003 on the tail**,
+  i.e. pure noise, and variance rose. The +0.0018 on fold2 is real but lands on
+  the easy regime that does not predict the leaderboard. Fails the acceptance
+  rule (needs ≥0.004 on recent windows).
+
+## Working the fold-3 improvement plan
+
+Two of its prescriptions were **already superseded** and are deliberately not
+followed:
+- *Phase 0.1* fixes `lr=0.05/leaves=63` as standard — the Kaggle re-sweep since
+  measured `lr=0.02/leaves=127` better on both the tail and fold2.
+- *Phase 5*'s recency specialist is **already done exactly as specified** (Jul 8
+  split so training contains post-change data, no weighting, 3 seeds) and is
+  negative: no weighting 0.5449 beats every half-life, monotonically. That also
+  removes the specialist half of Phase 6's blend.
+
+Implemented: Phase 3.1 (sub-hour/intermediate horizons, **matched to entity
+traffic density** — a 5-minute *customer* window is empty 99.6% of the time),
+3.2 (amount vs recent mean/max), 3.3 (recent counterparty expansion, the
+non-saturating replacement for lifetime fan-out).
+
+**Bug found while implementing:** pandas rolling `.count()` returns NaN for an
+empty window, so "zero transactions in the last hour" — real information — was
+encoded as *unknown*, including in the pre-existing `cnt_1h`/`amtsum_1h`
+features. Counts/sums now zero-fill; ratios correctly stay NaN.
+
 ## In flight (Kaggle, all compute runs there now)
 
-- **`react-2026-pipeline`** — regenerating a candidate with `lr=0.02, leaves=127`
-  (+0.0035 on the tail window, 0.5230 ± 0.0006 vs 0.5195 ± 0.0012). **Will not
-  be submitted without approval.**
 - **`react-2026-sweep`** (stage 2) — `min_data_in_leaf` × `feature_fraction` at
   the new lr/leaves, which stage 1 held fixed and which matter more now that
   we train ~940 rounds instead of ~140.
+- **`react-2026-final`** — the aggregation run: three arms (previous best / new
+  Phase 3 features / new-minus-graph) across four recent windows × 3 seeds,
+  judged by the plan's acceptance rule, then trains the winner.
+- **`react-2026-horizon`** — forecast-horizon decay. We tune rounds on Jul 1–15
+  (1–15 days ahead) but the test runs to **62 days** past training. Holds the
+  validation window fixed and walks the training cutoff back (gaps 0→60 days)
+  to measure how far accuracy falls at test-like horizons, and whether the
+  optimal round count falls too — if it does, the final refit at ~980 rounds is
+  fitted to short-horizon structure and should be cut.
 
 Kaggle kernels are generated from `src/` by `scripts/build_kaggle_kernel.py`,
 so they can't drift from local source. Gotcha recorded: the API mounts
