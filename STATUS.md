@@ -101,6 +101,7 @@ test window.
 | Ensembling / rank-averaging | Nothing: best single 0.5467, prob-avg 0.5473, rank-avg 0.5474 — all inside noise |
 | Isotonic calibration | Cut — cannot help a rank metric, can hurt via tie-collapsing |
 | Graph/cluster features | Net-neutral across every test; **dropped** in the final arm C on parsimony (removing them cost −0.0004, i.e. nothing) |
+| Ranking objectives | Dead. lambdarank -0.0100, rank_xendcg -0.0092, focal g=2 -0.0006 on the tail, all losing on fold2 too. PR-AUC scores ONE GLOBAL ranking; lambdarank optimises NDCG *within group*, so day-grouping taught within-day sorting and discarded the cross-day ordering the metric measures. No grouping fixes that -- a single 700k-row group is what the metric wants and is infeasible |
 | Log-transform duplicates | Removed — trees are invariant to monotonic transforms; they only stole `feature_fraction` slots |
 
 ## Local scores — current standing (all Kaggle-run, 3 seeds each)
@@ -289,7 +290,6 @@ group sizes, and tries a 7-day-blocked variant as the fallback.
 
 - `react-2026-te` -- target-encoding payoff (measurement only; still banned).
 - `react-2026-drift` -- time-local percentile normalisation.
-- `react-2026-obj` -- ranking objectives vs logloss.
 - `react-2026-prop3` -- does propagation survive test-like entity groups.
 
 
