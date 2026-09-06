@@ -772,6 +772,42 @@ def precision_recall_at_k(y_true, y_score, k_frac):
     rec = recall_score(y_true, y_pred, zero_division=0)
     return prec, rec
 
+
+# Prediction post-process: blend each score with a leave-one-out mean of the
+# same customer's other scores inside the same time block. Fraud clusters by
+# entity (P(sibling fraud|fraud) is 2.6x the base rate for customers) and a
+# per-row model cannot express that.
+#
+# The block matters. Unrestricted pooling measured +0.0049 on 6-14 day windows,
+# where a customer has ~2 rows and 58% are singletons -- but the 62-day test
+# window has ~6.9 rows and 19% singletons, and re-measured there unrestricted
+# pooling falls to +0.0023 and turns negative at higher weights. Blocking to
+# 7 days holds +0.0046..+0.0052 with the tightest variance of any variant.
+PROP_W = 0.05
+PROP_BLOCK_DAYS = 7
+
+
+def blocked_loo_blend(preds, customer_ids, timestamps, w: float = PROP_W,
+                      block_days: int = PROP_BLOCK_DAYS):
+    """Blend preds with the per-(customer, time-block) leave-one-out mean.
+
+    Uses only model outputs, customer ids and timestamps -- no labels -- so it
+    is safe to apply to the test set. Singletons keep their own value."""
+    ts = pd.to_datetime(pd.Series(np.asarray(timestamps)).reset_index(drop=True))
+    # .dt.days, not .days: subtracting two datetime Series gives a timedelta
+    # SERIES, whose day component lives under the .dt accessor.
+    block = ((ts - ts.min()).dt.days // block_days).to_numpy()
+    cid = pd.Series(np.asarray(customer_ids)).astype(str).to_numpy()
+    key = np.char.add(np.char.add(cid.astype(str), "|"), block.astype(str))
+
+    p = np.asarray(preds, dtype="float64")
+    sp = pd.Series(p, index=key)
+    grp = sp.groupby(level=0)
+    n = grp.transform("size").to_numpy()
+    tot = grp.transform("sum").to_numpy()
+    loo = np.where(n > 1, (tot - p) / np.maximum(n - 1, 1), p)
+    return (1.0 - w) * p + w * loo
+
 SEEDS = [0, 1, 2, 3, 4]
 FINAL_PARAMS = dict(
     objective="binary", metric="None", verbosity=-1, learning_rate=0.02,
@@ -795,23 +831,6 @@ FINAL_PARAMS = dict(
 #
 # Uses no labels on the scored rows -- only model outputs, customer ids and
 # timestamps -- so nothing is fitted to test.csv.
-PROP_W = 0.05
-PROP_BLOCK_DAYS = 7
-
-
-def blocked_loo_blend(p, customer_ids, timestamps, w=PROP_W, block_days=PROP_BLOCK_DAYS):
-    """Blend each score with the mean of its customer's other scores in the
-    same time block. Singletons keep their own value unchanged."""
-    block = ((timestamps - timestamps.min()).days // block_days).astype("int64")
-    key = pd.Series(customer_ids).astype(str) + "|" + pd.Series(block).astype(str)
-    sp = pd.Series(p, index=key.to_numpy())
-    grp = sp.groupby(level=0)
-    n = grp.transform("size").to_numpy()
-    tot = grp.transform("sum").to_numpy()
-    loo = np.where(n > 1, (tot - p) / np.maximum(n - 1, 1), p)
-    return (1 - w) * p + w * loo
-
-
 def main():
     t0 = time.time()
     train = pd.read_csv(TRAIN_CSV, parse_dates=[TIME_COL])
