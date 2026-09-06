@@ -65,10 +65,55 @@ Last updated: **2026-09-06 10:56 Dhaka** (~37h to the 2026-09-07 23:59:59 hard d
    was worse). Single LightGBM stays the model — PLAN.md's original
    "no 3-framework ensemble" leaning is now empirically confirmed, not
    just a time-saving assumption.
-2. Stretch goal (next up): second-order relationship/cluster features via `scipy.sparse.csgraph.connected_components` — lowest priority per the council's scope-creep triage, attempted now since the core pipeline is confirmed solid and hours remain.
-3. Keep building the Kaggle Notebook version incrementally (not just at the end) given the tight ~10h post-close reproducibility window — see `TEAM_TASKS.md` task 2.
-4. Team can now also work in parallel: `TEAM_TASKS.md` has step-by-step commands for (1) reproducing the pipeline locally and (2) packaging the Kaggle Notebook.
-5. No Kaggle submission until the team says so — everything validated locally via CV in the meantime.
+2. ~~Stretch goal: second-order relationship/cluster features~~ **Done —
+   net-neutral alone** (mean 0.6923 → 0.6929, inside noise; implemented via
+   an incremental Union-Find rather than a single static
+   `scipy.sparse.csgraph.connected_components` call, since that function has
+   no point-in-time notion and would leak later edges into earlier rows —
+   see `src/features.py` docstring). Kept in the pipeline by team decision
+   despite the neutral result.
+3. **A teammate shared an independent EDA/teardown doc** analyzing the raw
+   signal structure. Its headline finding — per-entity historical fraud-rate
+   / target encoding (`te_dev`, `te_mer`, `te_cust`) — is the single most
+   important input to its higher CV score (0.768 mean, best fold 0.812),
+   but it's exactly the mechanism our round-4 council unanimously rejected
+   as violating the organizer's "targeting specific entity IDs rather than
+   behavioral patterns" rule. **Not adopted** — same reasoning as before,
+   now with concrete evidence of the tradeoff (see `PLAN.md` for the
+   full writeup). Its CV also uses wider, looser folds (~117K rows each)
+   than ours, which independently inflates comparability.
+4. **Two compliant ideas from that same doc were adopted and validated —
+   large, real improvement**: log1p(amount) z-score per entity (amount is
+   heavily right-skewed; log-scale deviation is better-behaved than the
+   linear-scale one we already had) and `is_new_location_for_customer`
+   (same novelty pattern as device/merchant, extended to location). Combined
+   with the retained graph features:
+
+   | Fold | Before | Now | Δ |
+   |---|---|---|---|
+   | 0 | 0.7455 | 0.7748 | +0.029 |
+   | 1 | 0.7716 | 0.7883 | +0.017 |
+   | 2 | 0.7596 | 0.7810 | +0.021 |
+   | 3 (drift) | 0.4947 | 0.5029 | +0.008 |
+   | **mean** | 0.6929 | **0.7117** | **+0.019** |
+
+   Consistent gain across every fold, well beyond the ~0.002-0.006 noise
+   floor — a real improvement, not noise. This is now the best-validated
+   local pipeline, well ahead of what's actually submitted (0.51309 public).
+5. Retrained and **submitted** (2 remaining today): scored **0.51055** —
+   slightly *lower* than the previous best (0.51309), despite CV going up
+   (0.6923 → 0.7117). Investigated why via adversarial validation
+   (`scripts/08_adversarial_validation.py`, run per a team request to
+   research broader improvements, not just the drift fold): a train-vs-test
+   classifier achieves **AUC=1.0000** (perfectly separable), driven almost
+   entirely by the two bipartite graph component-size features — PSI
+   ~10-11, importance orders of magnitude above every other feature.
+   Root cause: Union-Find component sizes only grow over time, so test-period
+   values sit at a scale never seen in training — classic unbounded-feature
+   covariate shift. Testing a fix (drop vs. scale-invariant normalization)
+   now, before further changes.
+6. Keep building the Kaggle Notebook version incrementally (not just at the end) given the tight ~10h post-close reproducibility window — see `TEAM_TASKS.md` task 2.
+7. Team can now also work in parallel: `TEAM_TASKS.md` has step-by-step commands for (1) reproducing the pipeline locally and (2) packaging the Kaggle Notebook.
 
 ## Key risks being tracked
 
