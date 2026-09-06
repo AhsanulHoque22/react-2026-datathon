@@ -41,15 +41,24 @@ Last updated: **2026-09-06 10:56 Dhaka** (~37h to the 2026-09-07 23:59:59 hard d
   concern. The drift fold (fold 3) barely moved (0.4952 → 0.4973, within
   noise) — confirming again that fold's difficulty is a genuine behavior
   shift, not something more features fix. Keeping the extended windows.
-- Targeted hyperparameter search on the drift fold (fold 3) — running now.
+- ~~Targeted hyperparameter search on the drift fold~~ **Done — negative
+  result, current defaults kept.** Tested 5 configs
+  (`scripts/05_hparam_search.py`): the best alternative (num_leaves=127,
+  min_data_in_leaf=30) beat the current config by only +0.0006 PR-AUC —
+  smaller than the ~0.002 noise floor already seen in the recency-weighting
+  experiment, so not a real signal. Every *more*-regularized variant was
+  clearly worse (−0.006 to −0.010), confirming again that fold 3's
+  difficulty is genuine behavior drift, not overfitting a regularization
+  knob could fix. No full-CV re-validation run, since there was no
+  candidate worth validating.
 
 ## What's next
 
-1. Finish the hyperparameter search above; adopt only a config that helps without hurting the easier folds.
-2. Decide on the optional CatBoost blend (PLAN.md: opportunistic, only if hours allow with LightGBM already solid).
-3. Stretch goal (only after the above): second-order relationship/cluster features via `scipy.sparse.csgraph.connected_components` — not started yet, lowest priority per the council's scope-creep triage.
-4. Keep building the Kaggle Notebook version incrementally (not just at the end) given the tight ~10h post-close reproducibility window.
-5. Retrain + validate the final model with whatever the best-confirmed feature/hyperparameter set turns out to be; no Kaggle submission until the team says so.
+1. Decide on the optional CatBoost blend (PLAN.md: opportunistic, only if hours allow with LightGBM already solid).
+2. Stretch goal (only after the above): second-order relationship/cluster features via `scipy.sparse.csgraph.connected_components` — not started yet, lowest priority per the council's scope-creep triage.
+3. Keep building the Kaggle Notebook version incrementally (not just at the end) given the tight ~10h post-close reproducibility window — see `TEAM_TASKS.md` task 2.
+4. Team can now also work in parallel: `TEAM_TASKS.md` has step-by-step commands for (1) reproducing the pipeline locally and (2) packaging the Kaggle Notebook.
+5. No Kaggle submission until the team says so — everything validated locally via CV in the meantime.
 
 ## Key risks being tracked
 
