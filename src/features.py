@@ -393,6 +393,42 @@ def add_bipartite_component_features(df: pd.DataFrame, col_a: str, col_b: str, n
     return df
 
 
+def add_location_and_category_context_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Location velocity surges, category-relative amounts, and smurfing ratios.
+    
+    In July, fraud concentrated geographically (LOC_033 fraud rate jumped 4.2%->8.7%,
+    LOC_016 jumped 2.3%->5.2%) and median fraud amount collapsed from 1,636 to 1,064 BDT.
+    These features capture:
+    1. Geographic velocity surges (rolling 1h and 24h count/sum by location).
+    2. Category-relative amount scaling (evaluates amounts against category baseline).
+    3. Smurfing burst ratios (high count with low dollar volume).
+    """
+    loc_filled = df["location"].fillna("__unknown__")
+    sub_loc = pd.DataFrame({"location": loc_filled, TIME_COL: df[TIME_COL], "amount_bdt": df["amount_bdt"]})
+    grouped_loc = sub_loc.groupby("location")
+    for h in (1, 24):
+        roll = grouped_loc.rolling(f"{h}h", on=TIME_COL, closed="left")["amount_bdt"]
+        cnt = roll.count().reset_index(level=0, drop=True).sort_index()
+        s = roll.sum().reset_index(level=0, drop=True).sort_index()
+        df[f"loc_cnt_{h}h"] = np.nan_to_num(cnt.values, nan=0.0)
+        df[f"loc_amtsum_{h}h"] = np.nan_to_num(s.values, nan=0.0)
+
+    cat_filled = df["merchant_category"].fillna("__unknown__")
+    cat_grp = df.groupby(cat_filled)["amount_bdt"]
+    cat_cum_sum = cat_grp.cumsum()
+    cat_prior_sum = cat_cum_sum - df["amount_bdt"]
+    cat_prior_cnt = cat_grp.cumcount().astype("float64")
+    cat_prior_mean = cat_prior_sum / cat_prior_cnt.replace(0, np.nan)
+    df["amt_vs_cat_mean_prior"] = df["amount_bdt"] / (cat_prior_mean + EPS)
+
+    if "cust_cnt_1h" in df.columns and "cust_amtsum_1h" in df.columns:
+        df["cust_smurf_ratio_1h"] = (df["cust_cnt_1h"] + 1.0) / (df["cust_amtsum_1h"] + 10.0)
+    if "dev_cnt_1h" in df.columns and "dev_amtsum_1h" in df.columns:
+        df["dev_smurf_ratio_1h"] = (df["dev_cnt_1h"] + 1.0) / (df["dev_amtsum_1h"] + 10.0)
+
+    return df
+
+
 def build_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
 
@@ -447,6 +483,7 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     for entity_col, prefix in [("customer_id", "cust"), ("merchant_id", "merch"), ("device_id", "dev")]:
         df = add_self_relative_features(df, entity_col, prefix)
     df = add_hour_profile_features(df, "customer_id", "cust")
+    df = add_location_and_category_context_features(df)
 
     # Stretch goal (PLAN.md): second-order relationship/cluster features.
     df = add_bipartite_component_features(df, "customer_id", "device_id", "cd")

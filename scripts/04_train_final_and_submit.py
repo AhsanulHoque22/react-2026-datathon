@@ -49,7 +49,7 @@ y_hold = hold_df[LABEL_COL].astype(int)
 base_params = dict(
     objective="binary", metric="None",
     seed=SEED, bagging_seed=SEED, feature_fraction_seed=SEED, verbosity=-1,
-    learning_rate=0.05, num_leaves=63, feature_fraction=0.85,
+    learning_rate=0.02, num_leaves=127, feature_fraction=0.85,
     bagging_fraction=0.85, bagging_freq=1, min_data_in_leaf=50,
 )
 SEEDS = [0, 1, 2, 3, 4]  # seed-averaged final fit: seed std measured at 0.0020
