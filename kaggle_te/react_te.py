@@ -780,113 +780,104 @@ FINAL_PARAMS = dict(
 )
 
 
-# ----------------------------- pipeline ------------------------------------
+# ============ what is per-entity target encoding actually worth? ===========
+# BANNED by PLAN.md, and this kernel does not change that. It measures the
+# payoff so the adopt/don't-adopt call is made against a number instead of a
+# guess. Building the feature breaks no competition rule; only submitting a
+# model that uses it would be a judgement call, and that call is not made here.
+#
+# The organiser bans target encoding "using test.csv" -- this is train-only and
+# past-only, so it is not that clause. The exposure is the other clause:
+# "targeting specific entity IDs rather than behavioural patterns ... may be
+# flagged during reproducibility review".
 def main():
     t0 = time.time()
-    print("Loading raw data...", flush=True)
     train = pd.read_csv(TRAIN_CSV, parse_dates=[TIME_COL])
     test = pd.read_csv(TEST_CSV, parse_dates=[TIME_COL])
-    print(f"train={train.shape} test={test.shape} ({time.time()-t0:.1f}s)", flush=True)
-
     df = build_combined_frame(train, test)
     assert_frame_sane(df)
     del train, test
     gc.collect()
-
-    print("Building features...", flush=True)
     df = build_features(df)
     leakage_assertions(df)
-    print(f"featurized={df.shape} ({time.time()-t0:.1f}s)", flush=True)
-
     feature_cols, cat_cols = get_feature_columns(df)
-    frame_time_sorted = bool(df[TIME_COL].is_monotonic_increasing)
+    BASE = [c for c in feature_cols if "component_size_prior" not in c]
+
+    df = add_target_encoding(df)
+    TE_COLS = [c for c in df.columns if c.startswith("te_")]
+    print(f"featurized, base={len(BASE)}, te={len(TE_COLS)}: {TE_COLS} ({time.time()-t0:.0f}s)", flush=True)
+
+    # A test row must inherit its entity's TRAIN-period rate and nothing more:
+    # if the unlabelled period were accumulating, denominators would keep rising
+    # across test rows of the same entity.
+    _t = df[df["is_test"]]
+    _n_by_entity = _t.groupby("customer_id")["te_cust_n"].nunique()
+    assert (_n_by_entity <= 1).all(), "test rows accumulated into the target encoding"
+    print("checked: target encoding is frozen across the unlabelled test period", flush=True)
+
     labeled = df[~df["is_test"]]
-    test_df = df[df["is_test"]]
-
-    # ---- walk-forward CV: report per fold, and the fold that matters ----
-    print("\n=== Walk-forward CV ===", flush=True)
-    fold_scores = {}
-    for i, (start, end) in enumerate(CV_FOLDS):
-        s_ts, e_ts = pd.Timestamp(start), pd.Timestamp(end)
-        tr = labeled.loc[labeled[TIME_COL] < s_ts]
-        va = labeled.loc[(labeled[TIME_COL] >= s_ts) & (labeled[TIME_COL] < e_ts)]
-        X_tr, y_tr = prepare_lgb_frame(tr, feature_cols, cat_cols), tr[LABEL_COL].astype(int)
-        X_va, y_va = prepare_lgb_frame(va, feature_cols, cat_cols), va[LABEL_COL].astype(int)
-        bst = train_lgb(X_tr, y_tr, X_va, y_va, cat_cols)
-        p = bst.predict(X_va, num_iteration=bst.best_iteration)
-        ap = average_precision_score(y_va, p)
-        has_hist = (va["cust_history_count"] > 0).values
-        ap_hist = average_precision_score(y_va[has_hist], p[has_hist]) if has_hist.sum() else float("nan")
-        ap_cold = average_precision_score(y_va[~has_hist], p[~has_hist]) if (~has_hist).sum() else float("nan")
-        pk, _ = precision_recall_at_k(y_va.values, p, 0.005)
-        _, rk = precision_recall_at_k(y_va.values, p, 0.01)
-        fold_scores[i] = ap
-        print(f"fold{i} [{start}->{end}] PR-AUC={ap:.4f} (hist={ap_hist:.4f} cold={ap_cold:.4f}) "
-              f"P@0.5%={pk:.3f} R@1%={rk:.3f} iter={bst.best_iteration}", flush=True)
-        del X_tr, X_va, bst
-        gc.collect()
-
-    vals = np.array(list(fold_scores.values()))
-    print(f"mean={vals.mean():.4f} min={vals.min():.4f} max={vals.max():.4f} std={vals.std():.4f}")
-    print(f"LAST fold (the one that tracks the leaderboard) = {vals[-1]:.4f}", flush=True)
-
-    # ---- iteration count from a held-out tail, then seed-averaged refit ----
-    holdout_start = pd.Timestamp("2026-07-01")
-    fit_df = labeled.loc[labeled[TIME_COL] < holdout_start]
-    hold_df = labeled.loc[labeled[TIME_COL] >= holdout_start]
-    X_fit, y_fit = prepare_lgb_frame(fit_df, feature_cols, cat_cols), fit_df[LABEL_COL].astype(int)
-    X_hold, y_hold = prepare_lgb_frame(hold_df, feature_cols, cat_cols), hold_df[LABEL_COL].astype(int)
-    probe = train_lgb(X_fit, y_fit, X_hold, y_hold, cat_cols)
-    probe_ap = average_precision_score(y_hold, probe.predict(X_hold, num_iteration=probe.best_iteration))
-    final_rounds = int(round(probe.best_iteration * 1.1))
-    print(f"\nHeld-out PR-AUC={probe_ap:.4f} best_iter={probe.best_iteration} -> rounds={final_rounds}", flush=True)
-    del X_fit, X_hold, probe
+    del df, _t
     gc.collect()
 
-    X_full = prepare_lgb_frame(labeled, feature_cols, cat_cols)
-    y_full = labeled[LABEL_COL].astype(int)
-    X_test = prepare_lgb_frame(test_df, feature_cols, cat_cols)
-    test_ids = test_df["transaction_id"].values
-    del df, labeled, test_df
-    gc.collect()
+    WINDOWS = {
+        "Jun25-Jul02": ("2026-06-25", "2026-07-02"),
+        "Jul02-Jul08": ("2026-07-02", "2026-07-08"),
+        "Jul08-Jul16": ("2026-07-08", "2026-07-16"),
+        "fold2-guard": ("2026-06-18", "2026-07-02"),
+    }
+    ARMS = {
+        "A_no_TE(current best)": BASE,
+        "B_plus_TE":             BASE + TE_COLS,
+        "C_TE_rates_only":       BASE + [c for c in TE_COLS if not c.endswith(("_n", "_pos"))],
+    }
 
-    print(f"Refitting on full train, averaged over {len(SEEDS)} seeds...", flush=True)
-    ds = lgb.Dataset(X_full, label=y_full, categorical_feature=cat_cols, free_raw_data=False)
-    seed_preds = []
-    last_bst = None
-    for s in SEEDS:
-        params = dict(FINAL_PARAMS, seed=s, bagging_seed=s, feature_fraction_seed=s)
-        bst = lgb.train(params, ds, num_boost_round=final_rounds)
-        seed_preds.append(bst.predict(X_test))
-        last_bst = bst
-        print(f"  seed {s} done ({time.time()-t0:.0f}s)", flush=True)
-    preds = np.mean(seed_preds, axis=0)
+    results = {}
+    for arm, cols in ARMS.items():
+        cc = [c for c in cat_cols if c in cols]
+        results[arm] = {}
+        for wname, (s_, e_) in WINDOWS.items():
+            s_ts, e_ts = pd.Timestamp(s_), pd.Timestamp(e_)
+            tr = labeled.loc[labeled[TIME_COL] < s_ts]
+            va = labeled.loc[(labeled[TIME_COL] >= s_ts) & (labeled[TIME_COL] < e_ts)]
+            X_tr, y_tr = prepare_lgb_frame(tr, cols, cc), tr[LABEL_COL].astype(int)
+            X_va, y_va = prepare_lgb_frame(va, cols, cc), va[LABEL_COL].astype(int)
+            aps = []
+            for seed in (0, 1, 2):
+                params = dict(objective="binary", metric="None", verbosity=-1,
+                              learning_rate=0.02, num_leaves=127, feature_fraction=0.85,
+                              bagging_fraction=0.85, bagging_freq=1, min_data_in_leaf=50,
+                              seed=seed, bagging_seed=seed, feature_fraction_seed=seed)
+                ds_tr = lgb.Dataset(X_tr, label=y_tr, categorical_feature=cc, free_raw_data=False)
+                ds_va = lgb.Dataset(X_va, label=y_va, categorical_feature=cc, reference=ds_tr, free_raw_data=False)
+                bst = lgb.train(params, ds_tr, num_boost_round=4000, valid_sets=[ds_va],
+                                feval=make_pr_auc_feval(y_va.values, seed=seed),
+                                callbacks=[lgb.early_stopping(200, verbose=False),
+                                           lgb.log_evaluation(period=0)])
+                aps.append(average_precision_score(y_va, bst.predict(X_va, num_iteration=bst.best_iteration)))
+                if seed == 0 and wname == "Jul08-Jul16":
+                    imp = pd.Series(bst.feature_importance("gain"), index=cols).sort_values(ascending=False)
+                    print(f"    top-10 gain [{arm}]: {list(imp.index[:10])}", flush=True)
+            results[arm][wname] = (float(np.mean(aps)), float(np.std(aps)))
+            print(f"  {arm:24s} {wname:12s} {np.mean(aps):.4f} +/- {np.std(aps):.4f}  "
+                  f"[{time.time()-t0:.0f}s]", flush=True)
+            del X_tr, X_va
+            gc.collect()
 
-    # ---- pre-submission assertions (PLAN.md checklist) ----
-    assert frame_time_sorted, "frame not time-sorted"
-    assert LABEL_COL not in X_test.columns
-    for c in ID_COLS:
-        assert c not in X_test.columns, f"banned raw ID column {c} in feature matrix"
-    assert np.all((preds >= 0) & (preds <= 1)), "predictions outside [0,1]"
-    assert not np.isnan(preds).any(), "NaN predictions"
-
-    sample = pd.read_csv(SAMPLE_SUBMISSION_CSV)
-    sub = pd.DataFrame({"transaction_id": test_ids, "fraud": preds})
-    sub = sub.set_index("transaction_id").loc[sample["transaction_id"]].reset_index()
-    assert list(sub["transaction_id"]) == list(sample["transaction_id"]), "row order mismatch"
-    assert sub.shape == sample.shape
-    assert sub["fraud"].between(0, 1).all()
-    assert (sub["fraud"] != sub["fraud"].round().astype(int)).any(), "looks thresholded to 0/1"
-
-    sub.to_csv(OUT_DIR / "submission.csv", index=False)
-    print(f"\nAll assertions passed. Wrote submission.csv {sub.shape} (total {time.time()-t0:.1f}s)")
-    print(sub["fraud"].describe())
-
-    imp = pd.Series(last_bst.feature_importance(importance_type="gain"),
-                    index=feature_cols).sort_values(ascending=False)
-    print("\nTop 20 features by gain:")
-    print(imp.head(20).to_string())
-    imp.to_csv(OUT_DIR / "feature_importance.csv")
+    print("\n=============== TARGET-ENCODING PAYOFF ===============")
+    recent = [w for w in WINDOWS if w != "fold2-guard"]
+    print(f"{'arm':26s}" + "".join(f"{w:>16s}" for w in WINDOWS) + f"{'RECENT MEAN':>14s}")
+    for arm in ARMS:
+        row = f"{arm:26s}"
+        for w in WINDOWS:
+            m, sd = results[arm][w]
+            row += f"{m:>10.4f}+-{sd:.3f}"
+        row += f"{np.mean([results[arm][w][0] for w in recent]):>14.4f}"
+        print(row)
+    base = np.mean([results["A_no_TE(current best)"][w][0] for w in recent])
+    for arm in ["B_plus_TE", "C_TE_rates_only"]:
+        rm = np.mean([results[arm][w][0] for w in recent])
+        print(f"\n{arm}: recent-mean {rm:.4f} vs {base:.4f} -> delta {rm-base:+.4f}")
+    print("\nNo submission written. Adoption is a human decision (PLAN.md ban).")
 
 
 if __name__ == "__main__":

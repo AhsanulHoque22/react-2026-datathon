@@ -780,113 +780,93 @@ FINAL_PARAMS = dict(
 )
 
 
-# ----------------------------- pipeline ------------------------------------
+# ====== does propagating predictions across an entity's rows help? =========
+# Fraud is not independent per transaction: if one of a customer's or device's
+# transactions is fraudulent, its siblings are likelier to be too. A per-row
+# model cannot express that -- it scores each row alone. Blending each row's
+# score with an aggregate of its entity's OTHER scored rows is a transductive
+# post-process that can only sharpen a ranking metric if the clustering is real.
+#
+# Uses no labels at all on the scored window -- only model outputs and entity
+# ids -- so it is clean under every rule: nothing is fitted to test.csv.
 def main():
     t0 = time.time()
-    print("Loading raw data...", flush=True)
     train = pd.read_csv(TRAIN_CSV, parse_dates=[TIME_COL])
     test = pd.read_csv(TEST_CSV, parse_dates=[TIME_COL])
-    print(f"train={train.shape} test={test.shape} ({time.time()-t0:.1f}s)", flush=True)
-
     df = build_combined_frame(train, test)
     assert_frame_sane(df)
     del train, test
     gc.collect()
-
-    print("Building features...", flush=True)
     df = build_features(df)
-    leakage_assertions(df)
-    print(f"featurized={df.shape} ({time.time()-t0:.1f}s)", flush=True)
-
     feature_cols, cat_cols = get_feature_columns(df)
-    frame_time_sorted = bool(df[TIME_COL].is_monotonic_increasing)
+    cols = [c for c in feature_cols if "component_size_prior" not in c]
+    cc = [c for c in cat_cols if c in cols]
     labeled = df[~df["is_test"]]
-    test_df = df[df["is_test"]]
+    del df
+    gc.collect()
+    print(f"featurized, {len(cols)} features ({time.time()-t0:.0f}s)", flush=True)
 
-    # ---- walk-forward CV: report per fold, and the fold that matters ----
-    print("\n=== Walk-forward CV ===", flush=True)
-    fold_scores = {}
-    for i, (start, end) in enumerate(CV_FOLDS):
-        s_ts, e_ts = pd.Timestamp(start), pd.Timestamp(end)
+    # First: is the clustering even there? Measure it on labelled data.
+    for ent in ("customer_id", "merchant_id", "device_id"):
+        g = labeled.groupby(ent)[LABEL_COL]
+        n, k = g.size(), g.sum()
+        multi = n > 1
+        # P(another row of this entity is fraud | this row is fraud), vs base rate
+        p_sib = float(((k * (k - 1)).loc[multi].sum()) / ((n * (n - 1)).loc[multi].sum()))
+        print(f"  {ent:14s} P(sibling fraud|fraud)={p_sib:.4f} vs base {labeled[LABEL_COL].mean():.4f} "
+              f"-> lift {p_sib/labeled[LABEL_COL].mean():.1f}x", flush=True)
+
+    WINDOWS = {"Jul02-Jul08": ("2026-07-02", "2026-07-08"),
+               "Jul08-Jul16": ("2026-07-08", "2026-07-16")}
+    ENTITIES = ["customer_id", "device_id", "merchant_id"]
+    WEIGHTS = [0.0, 0.1, 0.2, 0.3, 0.5]
+
+    for wname, (s_, e_) in WINDOWS.items():
+        s_ts, e_ts = pd.Timestamp(s_), pd.Timestamp(e_)
         tr = labeled.loc[labeled[TIME_COL] < s_ts]
         va = labeled.loc[(labeled[TIME_COL] >= s_ts) & (labeled[TIME_COL] < e_ts)]
-        X_tr, y_tr = prepare_lgb_frame(tr, feature_cols, cat_cols), tr[LABEL_COL].astype(int)
-        X_va, y_va = prepare_lgb_frame(va, feature_cols, cat_cols), va[LABEL_COL].astype(int)
-        bst = train_lgb(X_tr, y_tr, X_va, y_va, cat_cols)
-        p = bst.predict(X_va, num_iteration=bst.best_iteration)
-        ap = average_precision_score(y_va, p)
-        has_hist = (va["cust_history_count"] > 0).values
-        ap_hist = average_precision_score(y_va[has_hist], p[has_hist]) if has_hist.sum() else float("nan")
-        ap_cold = average_precision_score(y_va[~has_hist], p[~has_hist]) if (~has_hist).sum() else float("nan")
-        pk, _ = precision_recall_at_k(y_va.values, p, 0.005)
-        _, rk = precision_recall_at_k(y_va.values, p, 0.01)
-        fold_scores[i] = ap
-        print(f"fold{i} [{start}->{end}] PR-AUC={ap:.4f} (hist={ap_hist:.4f} cold={ap_cold:.4f}) "
-              f"P@0.5%={pk:.3f} R@1%={rk:.3f} iter={bst.best_iteration}", flush=True)
-        del X_tr, X_va, bst
+        X_tr, y_tr = prepare_lgb_frame(tr, cols, cc), tr[LABEL_COL].astype(int)
+        X_va, y_va = prepare_lgb_frame(va, cols, cc), va[LABEL_COL].astype(int)
+        preds = []
+        for seed in (0, 1, 2):
+            params = dict(objective="binary", metric="None", verbosity=-1,
+                          learning_rate=0.02, num_leaves=127, feature_fraction=0.85,
+                          bagging_fraction=0.85, bagging_freq=1, min_data_in_leaf=50,
+                          seed=seed, bagging_seed=seed, feature_fraction_seed=seed)
+            ds_tr = lgb.Dataset(X_tr, label=y_tr, categorical_feature=cc, free_raw_data=False)
+            ds_va = lgb.Dataset(X_va, label=y_va, categorical_feature=cc, reference=ds_tr, free_raw_data=False)
+            bst = lgb.train(params, ds_tr, num_boost_round=4000, valid_sets=[ds_va],
+                            feval=make_pr_auc_feval(y_va.values, seed=seed),
+                            callbacks=[lgb.early_stopping(200, verbose=False),
+                                       lgb.log_evaluation(period=0)])
+            preds.append(bst.predict(X_va, num_iteration=bst.best_iteration))
+        p = np.mean(preds, axis=0)
+        yv = y_va.values
+        print(f"\n--- {wname}: baseline AP {average_precision_score(yv, p):.4f} "
+              f"({len(va)} rows, {int(yv.sum())} frauds) [{time.time()-t0:.0f}s]", flush=True)
+
+        for ent in ENTITIES:
+            key = va[ent].values
+            sp = pd.Series(p, index=key)
+            grp = sp.groupby(level=0)
+            n_ent = grp.transform("size").to_numpy()
+            # leave-one-out mean of the entity's OTHER rows; max over others too
+            tot = grp.transform("sum").to_numpy()
+            loo_mean = np.where(n_ent > 1, (tot - p) / np.maximum(n_ent - 1, 1), p)
+            g_max = grp.transform("max").to_numpy()
+            # if this row IS the max, fall back to its own value (no other-row max
+            # is available cheaply); only affects singletons and argmax rows
+            loo_max = np.where(n_ent > 1, g_max, p)
+            for aggname, agg in (("loo_mean", loo_mean), ("loo_max", loo_max)):
+                line = f"    {ent:12s} {aggname:9s}"
+                for w in WEIGHTS:
+                    blended = (1 - w) * p + w * agg
+                    line += f"  w={w}:{average_precision_score(yv, blended):.4f}"
+                print(line, flush=True)
+        del X_tr, X_va
         gc.collect()
 
-    vals = np.array(list(fold_scores.values()))
-    print(f"mean={vals.mean():.4f} min={vals.min():.4f} max={vals.max():.4f} std={vals.std():.4f}")
-    print(f"LAST fold (the one that tracks the leaderboard) = {vals[-1]:.4f}", flush=True)
-
-    # ---- iteration count from a held-out tail, then seed-averaged refit ----
-    holdout_start = pd.Timestamp("2026-07-01")
-    fit_df = labeled.loc[labeled[TIME_COL] < holdout_start]
-    hold_df = labeled.loc[labeled[TIME_COL] >= holdout_start]
-    X_fit, y_fit = prepare_lgb_frame(fit_df, feature_cols, cat_cols), fit_df[LABEL_COL].astype(int)
-    X_hold, y_hold = prepare_lgb_frame(hold_df, feature_cols, cat_cols), hold_df[LABEL_COL].astype(int)
-    probe = train_lgb(X_fit, y_fit, X_hold, y_hold, cat_cols)
-    probe_ap = average_precision_score(y_hold, probe.predict(X_hold, num_iteration=probe.best_iteration))
-    final_rounds = int(round(probe.best_iteration * 1.1))
-    print(f"\nHeld-out PR-AUC={probe_ap:.4f} best_iter={probe.best_iteration} -> rounds={final_rounds}", flush=True)
-    del X_fit, X_hold, probe
-    gc.collect()
-
-    X_full = prepare_lgb_frame(labeled, feature_cols, cat_cols)
-    y_full = labeled[LABEL_COL].astype(int)
-    X_test = prepare_lgb_frame(test_df, feature_cols, cat_cols)
-    test_ids = test_df["transaction_id"].values
-    del df, labeled, test_df
-    gc.collect()
-
-    print(f"Refitting on full train, averaged over {len(SEEDS)} seeds...", flush=True)
-    ds = lgb.Dataset(X_full, label=y_full, categorical_feature=cat_cols, free_raw_data=False)
-    seed_preds = []
-    last_bst = None
-    for s in SEEDS:
-        params = dict(FINAL_PARAMS, seed=s, bagging_seed=s, feature_fraction_seed=s)
-        bst = lgb.train(params, ds, num_boost_round=final_rounds)
-        seed_preds.append(bst.predict(X_test))
-        last_bst = bst
-        print(f"  seed {s} done ({time.time()-t0:.0f}s)", flush=True)
-    preds = np.mean(seed_preds, axis=0)
-
-    # ---- pre-submission assertions (PLAN.md checklist) ----
-    assert frame_time_sorted, "frame not time-sorted"
-    assert LABEL_COL not in X_test.columns
-    for c in ID_COLS:
-        assert c not in X_test.columns, f"banned raw ID column {c} in feature matrix"
-    assert np.all((preds >= 0) & (preds <= 1)), "predictions outside [0,1]"
-    assert not np.isnan(preds).any(), "NaN predictions"
-
-    sample = pd.read_csv(SAMPLE_SUBMISSION_CSV)
-    sub = pd.DataFrame({"transaction_id": test_ids, "fraud": preds})
-    sub = sub.set_index("transaction_id").loc[sample["transaction_id"]].reset_index()
-    assert list(sub["transaction_id"]) == list(sample["transaction_id"]), "row order mismatch"
-    assert sub.shape == sample.shape
-    assert sub["fraud"].between(0, 1).all()
-    assert (sub["fraud"] != sub["fraud"].round().astype(int)).any(), "looks thresholded to 0/1"
-
-    sub.to_csv(OUT_DIR / "submission.csv", index=False)
-    print(f"\nAll assertions passed. Wrote submission.csv {sub.shape} (total {time.time()-t0:.1f}s)")
-    print(sub["fraud"].describe())
-
-    imp = pd.Series(last_bst.feature_importance(importance_type="gain"),
-                    index=feature_cols).sort_values(ascending=False)
-    print("\nTop 20 features by gain:")
-    print(imp.head(20).to_string())
-    imp.to_csv(OUT_DIR / "feature_importance.csv")
+    print("\nA weight column beating w=0.0 by >= 0.004 on both windows is a real win.")
 
 
 if __name__ == "__main__":

@@ -621,6 +621,41 @@ def add_time_local_percentiles(df: pd.DataFrame, cols, window_days: int = 14,
         new_cols[c + suffix] = res
     return pd.concat([df, pd.DataFrame(new_cols, index=df.index)], axis=1)
 
+
+def add_target_encoding(df: pd.DataFrame, entity_cols=("customer_id", "merchant_id", "device_id"),
+                        alpha: float = 20.0, label_col: str = "fraud") -> pd.DataFrame:
+    """Past-only, smoothed per-entity historical fraud rate.
+
+    *** BANNED by PLAN.md. Not called from build_features() -- experiment code
+    only, so that measuring the payoff never silently changes the production
+    pipeline. Adopting it is a human decision, not a code change. ***
+
+    Leakage-safe in the ordinary sense: row i sees only labels of rows strictly
+    before i, and the denominator counts only LABELED rows, so a test row
+    inherits its entity's train-period rate and nothing accumulates from the
+    unlabelled test period. Smoothed toward the global rate so a one-transaction
+    entity is not encoded as 0% or 100%.
+
+    Why it is banned anyway: it keys on entity identity rather than behaviour,
+    which the organiser warns "may be flagged during reproducibility review"."""
+    df = df.copy()
+    y = df[label_col].astype("float64").fillna(0.0)
+    is_lab = (~df["is_test"]).astype("float64") if "is_test" in df.columns else pd.Series(
+        1.0, index=df.index)
+    global_rate = float(y[is_lab == 1.0].mean())
+
+    new = {}
+    for col in entity_cols:
+        g = df[col]
+        prior_pos = y.groupby(g).cumsum() - y
+        prior_n = is_lab.groupby(g).cumsum() - is_lab
+        tag = {"customer_id": "cust", "merchant_id": "merch", "device_id": "dev"}.get(
+            col, col.replace("_id", ""))
+        new[f"te_{tag}"] = ((prior_pos + alpha * global_rate) / (prior_n + alpha)).to_numpy()
+        new[f"te_{tag}_n"] = prior_n.to_numpy()
+        new[f"te_{tag}_pos"] = prior_pos.to_numpy()
+    return pd.concat([df, pd.DataFrame(new, index=df.index)], axis=1)
+
 # ===================== src/model.py =====================
 CAT_COLS = ["merchant_category", "device_type", "location", "payment_method", "transaction_type"]
 # log_amount_bdt is a helper column for the log-space z-scores, not a model
