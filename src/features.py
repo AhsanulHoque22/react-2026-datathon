@@ -102,6 +102,63 @@ def add_entity_expanding_features(df: pd.DataFrame, entity_col: str, prefix: str
     return df
 
 
+def add_self_relative_features(df: pd.DataFrame, entity_col: str, prefix: str) -> pd.DataFrame:
+    """Everything here is "this entity vs its OWN norm", which is the only
+    pattern that survives the July regime change.
+
+    The univariate audit (scripts/12) found the sole feature family that gets
+    STRONGER in July is short-horizon volume (dev_amtsum_24h 1.96x,
+    cust_amtsum_24h 1.73x), and the single best July feature is
+    cust_amt_ratio -- amount over the entity's own prior mean. Both are
+    self-relative. Absolute levels and cumulative counts decay. So these
+    normalise the winning family by each entity's own baseline rather than
+    adding more absolute quantities.
+    """
+    ts = df[TIME_COL].astype("int64") // 10 ** 9
+    first_ts = ts.groupby(df[entity_col]).transform("min")
+    age_sec = (ts - first_ts).astype("float64")
+    hist = df[f"{prefix}_history_count"]
+
+    # Expected inter-arrival gap for this entity, from its own history.
+    mean_gap = age_sec / np.maximum(hist, 1.0)
+    # >1 means this transaction came sooner than this entity's own norm.
+    df[f"{prefix}_gap_accel"] = mean_gap / (df[f"{prefix}_seconds_since_last"] + 1.0)
+
+    # Burst relative to the entity's own long-run rate, rather than in
+    # absolute counts -- "unusually busy FOR ITSELF right now".
+    rate_per_sec = hist / np.maximum(age_sec, 1.0)
+    for h in (1, 24):
+        col = f"{prefix}_cnt_{h}h"
+        if col in df.columns:
+            expected = rate_per_sec * (h * 3600.0)
+            df[f"{prefix}_velocity_ratio_{h}h"] = df[col] / (expected + EPS)
+
+    # Largest amount this entity has ever transacted, and whether this one
+    # breaks that record. A new personal maximum is a different signal from
+    # "large relative to the mean".
+    # Shift WITHIN the group: an entity's rows are scattered through the
+    # time-sorted frame, so a plain .shift(1) would pull in whatever
+    # unrelated transaction happened to precede it globally.
+    prior_max = df.groupby(entity_col)["amount_bdt"].cummax().groupby(df[entity_col]).shift(1)
+    df[f"{prefix}_amt_vs_prior_max"] = df["amount_bdt"] / (prior_max + EPS)
+    df[f"{prefix}_is_record_amt"] = (df["amount_bdt"] > prior_max).astype("float64")
+    df.loc[prior_max.isna(), f"{prefix}_is_record_amt"] = np.nan
+    return df
+
+
+def add_hour_profile_features(df: pd.DataFrame, entity_col: str, prefix: str) -> pd.DataFrame:
+    """Is this an unusual hour for THIS entity? The brief asks for exactly
+    this ("is this an unusual hour or day for this customer?"), and our
+    existing calendar features only encode the global hour, not whether the
+    hour is unusual for the individual."""
+    bucket = (df[TIME_COL].dt.hour // 4).astype("int8")  # 6 x 4-hour buckets
+    prior_in_bucket = df.groupby([df[entity_col], bucket]).cumcount().astype("float64")
+    prior_total = df.groupby(entity_col).cumcount().astype("float64")
+    df[f"{prefix}_hour_bucket_share"] = prior_in_bucket / np.maximum(prior_total, 1.0)
+    df[f"{prefix}_new_hour_bucket"] = (prior_in_bucket == 0).astype("int8")
+    return df
+
+
 def add_pair_novelty_features(df: pd.DataFrame, col_a: str, col_b: str, name: str) -> pd.DataFrame:
     """For each (col_a, col_b) pair, add:
     - is_first_pair: True at the row this exact pair first appears (chronologically)
@@ -297,11 +354,19 @@ def build_features(df: pd.DataFrame) -> pd.DataFrame:
     # confirmed compliant and worthwhile signal by an independent teardown.
     df = add_pair_novelty_features(df, "customer_id", "location", "location_for_customer")
 
+    # Self-relative features -- must run AFTER the trailing windows, since
+    # the velocity ratios normalise those counts by each entity's own rate.
+    for entity_col, prefix in [("customer_id", "cust"), ("merchant_id", "merch"), ("device_id", "dev")]:
+        df = add_self_relative_features(df, entity_col, prefix)
+    df = add_hour_profile_features(df, "customer_id", "cust")
+
     # Stretch goal (PLAN.md): second-order relationship/cluster features.
     df = add_bipartite_component_features(df, "customer_id", "device_id", "cd")
     df = add_bipartite_component_features(df, "customer_id", "merchant_id", "cm")
 
-    return df
+    # Defragment: ~130 individual column inserts leave the block manager
+    # badly fragmented, which slows every downstream slice.
+    return df.copy()
 
 
 def leakage_assertions(df: pd.DataFrame):

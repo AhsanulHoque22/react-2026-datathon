@@ -571,7 +571,7 @@ FINAL_PARAMS = dict(
 )
 
 
-# --------- recency asymmetry + ensemble blending experiments ---------------
+# ------------- ablation: do the new self-relative features help? -----------
 def main():
     t0 = time.time()
     train = pd.read_csv(TRAIN_CSV, parse_dates=[TIME_COL])
@@ -581,82 +581,50 @@ def main():
     del train, test
     gc.collect()
     df = build_features(df)
+    leakage_assertions(df)
     feature_cols, cat_cols = get_feature_columns(df)
     labeled = df[~df["is_test"]]
     del df
     gc.collect()
     print(f"featurized, {len(feature_cols)} features ({time.time()-t0:.0f}s)", flush=True)
 
-    # EXPERIMENT A -- recency weighting, tested FAIRLY this time.
-    # The earlier test validated on Jul 2-15 while training on data ending
-    # Jul 2, i.e. entirely BEFORE the regime change -- there was no
-    # post-change data to weight toward, so it could not have helped. Here
-    # the split is Jul 8: training now contains ~1 week of post-change data,
-    # which mirrors the real submission (trains through Jul 15, predicts
-    # Jul 16+). This is the only configuration where recency weighting has
-    # a mechanism to work.
-    split = pd.Timestamp("2026-07-08")
-    tr = labeled.loc[labeled[TIME_COL] < split]
-    va = labeled.loc[labeled[TIME_COL] >= split]
-    X_tr, y_tr = prepare_lgb_frame(tr, feature_cols, cat_cols), tr[LABEL_COL].astype(int)
-    X_va, y_va = prepare_lgb_frame(va, feature_cols, cat_cols), va[LABEL_COL].astype(int)
-    print(f"\nEXP A split Jul08: train={len(tr)} valid={len(va)} "
-          f"frauds={int(y_va.sum())}", flush=True)
+    NEW = [c for c in feature_cols if any(k in c for k in
+           ("_gap_accel", "_velocity_ratio_", "_amt_vs_prior_max",
+            "_is_record_amt", "_hour_bucket_share", "_new_hour_bucket"))]
+    print(f"{len(NEW)} new self-relative features: {NEW}", flush=True)
 
-    days_before = (tr[TIME_COL].max() - tr[TIME_COL]).dt.total_seconds().values / 86400.0
+    # Two windows: the tail is the leaderboard proxy, fold2 guards the easy regime.
+    WINDOWS = {"tail(Jul01-15)": ("2026-07-01", "2026-07-16"),
+               "fold2(Jun18-Jul02)": ("2026-06-18", "2026-07-02")}
 
-    def run_weighted(half_life, tag):
-        aps = []
-        for seed in (0, 1, 2):
-            w = None if half_life is None else np.exp(-np.log(2) / half_life * days_before)
-            params = dict(objective="binary", metric="None", verbosity=-1,
-                          learning_rate=0.05, num_leaves=63, feature_fraction=0.85,
-                          bagging_fraction=0.85, bagging_freq=1, min_data_in_leaf=50,
-                          seed=seed, bagging_seed=seed, feature_fraction_seed=seed)
-            ds_tr = lgb.Dataset(X_tr, label=y_tr, weight=w, categorical_feature=cat_cols, free_raw_data=False)
-            ds_va = lgb.Dataset(X_va, label=y_va, categorical_feature=cat_cols, reference=ds_tr, free_raw_data=False)
-            bst = lgb.train(params, ds_tr, num_boost_round=4000, valid_sets=[ds_va],
-                            feval=make_pr_auc_feval(y_va.values, seed=seed),
-                            callbacks=[lgb.early_stopping(200, verbose=False), lgb.log_evaluation(period=0)])
-            aps.append(average_precision_score(y_va, bst.predict(X_va, num_iteration=bst.best_iteration)))
-        print(f"  {tag:32s} {np.mean(aps):.4f} +/- {np.std(aps):.4f}  [{time.time()-t0:.0f}s]", flush=True)
-        return float(np.mean(aps))
+    def evaluate(cols, tag):
+        for wname, (s_, e_) in WINDOWS.items():
+            s_ts, e_ts = pd.Timestamp(s_), pd.Timestamp(e_)
+            tr = labeled.loc[labeled[TIME_COL] < s_ts]
+            va = labeled.loc[(labeled[TIME_COL] >= s_ts) & (labeled[TIME_COL] < e_ts)]
+            cc = [c for c in cat_cols if c in cols]
+            X_tr, y_tr = prepare_lgb_frame(tr, cols, cc), tr[LABEL_COL].astype(int)
+            X_va, y_va = prepare_lgb_frame(va, cols, cc), va[LABEL_COL].astype(int)
+            aps = []
+            for seed in (0, 1, 2):
+                params = dict(objective="binary", metric="None", verbosity=-1,
+                              learning_rate=0.02, num_leaves=127, feature_fraction=0.85,
+                              bagging_fraction=0.85, bagging_freq=1, min_data_in_leaf=50,
+                              seed=seed, bagging_seed=seed, feature_fraction_seed=seed)
+                ds_tr = lgb.Dataset(X_tr, label=y_tr, categorical_feature=cc, free_raw_data=False)
+                ds_va = lgb.Dataset(X_va, label=y_va, categorical_feature=cc, reference=ds_tr, free_raw_data=False)
+                bst = lgb.train(params, ds_tr, num_boost_round=4000, valid_sets=[ds_va],
+                                feval=make_pr_auc_feval(y_va.values, seed=seed),
+                                callbacks=[lgb.early_stopping(200, verbose=False),
+                                           lgb.log_evaluation(period=0)])
+                aps.append(average_precision_score(y_va, bst.predict(X_va, num_iteration=bst.best_iteration)))
+            print(f"  {tag:22s} {wname:20s} {np.mean(aps):.4f} +/- {np.std(aps):.4f}  [{time.time()-t0:.0f}s]", flush=True)
+            del X_tr, X_va
+            gc.collect()
 
-    print("EXPERIMENT A: recency weighting with post-change data in train")
-    run_weighted(None, "no weighting")
-    for hl in (7, 14, 30, 60):
-        run_weighted(hl, f"exp decay half-life={hl}d")
-
-    # EXPERIMENT B -- ensemble blending. Research says rank-averaging beats
-    # probability-averaging for rank metrics because it ignores calibration
-    # differences between models. Worth checking directly rather than assuming.
-    print("\nEXPERIMENT B: ensemble blending (rank vs probability averaging)")
-    CONFIGS = [dict(learning_rate=0.05, num_leaves=63, feature_fraction=0.85),
-               dict(learning_rate=0.02, num_leaves=127, feature_fraction=0.7),
-               dict(learning_rate=0.1, num_leaves=31, feature_fraction=0.95)]
-    preds, singles = [], []
-    for i, cfg in enumerate(CONFIGS):
-        params = dict(objective="binary", metric="None", verbosity=-1,
-                      bagging_fraction=0.85, bagging_freq=1, min_data_in_leaf=50,
-                      seed=i, bagging_seed=i, feature_fraction_seed=i, **cfg)
-        ds_tr = lgb.Dataset(X_tr, label=y_tr, categorical_feature=cat_cols, free_raw_data=False)
-        ds_va = lgb.Dataset(X_va, label=y_va, categorical_feature=cat_cols, reference=ds_tr, free_raw_data=False)
-        bst = lgb.train(params, ds_tr, num_boost_round=4000, valid_sets=[ds_va],
-                        feval=make_pr_auc_feval(y_va.values, seed=i),
-                        callbacks=[lgb.early_stopping(200, verbose=False), lgb.log_evaluation(period=0)])
-        p = bst.predict(X_va, num_iteration=bst.best_iteration)
-        preds.append(p)
-        ap = average_precision_score(y_va, p)
-        singles.append(ap)
-        print(f"  model {i} {cfg} -> {ap:.4f}", flush=True)
-
-    P = np.vstack(preds)
-    prob_avg = P.mean(axis=0)
-    ranks = np.vstack([pd.Series(p).rank(pct=True).values for p in preds])
-    rank_avg = ranks.mean(axis=0)
-    print(f"  best single         : {max(singles):.4f}")
-    print(f"  probability average : {average_precision_score(y_va, prob_avg):.4f}")
-    print(f"  RANK average        : {average_precision_score(y_va, rank_avg):.4f}", flush=True)
+    print("\nABLATION (3 seeds each; seed-noise std is ~0.0020)")
+    evaluate([c for c in feature_cols if c not in NEW], "WITHOUT new")
+    evaluate(feature_cols, "WITH new")
 
 
 if __name__ == "__main__":
