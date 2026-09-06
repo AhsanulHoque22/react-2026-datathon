@@ -204,16 +204,45 @@ have nothing left to give, and the +0.002-0.004 they were hoped to add does
 not exist. Only `mdl=500` is clearly bad (over-regularised: 453 rounds at
 ff=0.85 vs ~940).
 
-## In flight (Kaggle, all compute runs there now)
+### Forecast-horizon decay (`react-2026-horizon`)
 
-`react-2026-final` and `react-2026-sweep` **completed** — results above.
+Validation window held fixed at Jul 1-16; the training cutoff walks backwards
+so the train-to-prediction gap grows. 3 seeds per row.
 
-- **`react-2026-horizon`** — forecast-horizon decay. We tune rounds on Jul 1–15
-  (1–15 days ahead) but the test runs to **62 days** past training. Holds the
-  validation window fixed and walks the training cutoff back (gaps 0→60 days)
-  to measure how far accuracy falls at test-like horizons, and whether the
-  optimal round count falls too — if it does, the final refit at ~980 rounds is
-  fitted to short-horizon structure and should be cut.
+| train ends | gap (days) | PR-AUC | best_iter |
+|---|---|---|---|
+| 2026-07-01 | 0 | 0.5256 | 911 |
+| 2026-06-24 | 7 | 0.5259 | 768 |
+| 2026-06-17 | 14 | 0.5243 | 676 |
+| 2026-06-01 | 30 | 0.5209 | 1097 |
+| 2026-05-17 | 45 | 0.5144 | 805 |
+| 2026-05-02 | 60 | 0.5068 | 756 |
+
+**Two findings, and the one we went looking for is disconfirmed.**
+
+1. `best_iter` does **not** decay with the gap: 911 -> 768 -> 676 -> 1097 ->
+   805 -> 756, a noisy band of 676-1097 with no trend. The hypothesis that
+   ~967 rounds is fitted to short-horizon structure and should be cut is
+   **wrong**. The final refit keeps its round count unchanged.
+2. Accuracy *does* decay, and steeply: **-0.019 AP over 60 days** of staleness,
+   almost all of it after day 14 (-0.0013 to day 14, then -0.017). The model
+   ages fast.
+
+Finding 2 has no fix available to us. It measures the cost of *stale training
+data*, and we already train to the last row of `train.csv` -- there is no
+fresher data to add. What it does mean is that the Jul 1-15 probe (gap ~0-15d)
+**overstates** what late test rows will score: the test window runs ~62 days
+past training, so its later half sits in the -0.015 to -0.019 region. Expect
+the leaderboard to reward this model less than the local probe implies.
+
+It also explains why recency weighting kept failing. Down-weighting old rows
+does not make the model younger; it just discards signal while leaving the
+staleness untouched.
+
+## In flight
+
+**Nothing.** All Kaggle kernels complete.
+
 
 Kaggle kernels are generated from `src/` by `scripts/build_kaggle_kernel.py`,
 so they can't drift from local source. Gotcha recorded: the API mounts
@@ -242,5 +271,16 @@ only submitting a model that uses it would be.
 
 ## Next
 
-Holding at 0.53948 until midnight. Then ~8h of work on your plans, scored
-**locally only** — no submissions without your say-so.
+Every queued experiment has now reported. **Final local score: 0.5252** on the
+Jul 1-15 tail (arm C), vs 0.5204 for the configuration currently sitting at
+0.53948 on the leaderboard — **+0.0048, ~2.4x the seed-noise std**, with the
+sign holding across three independent recent windows.
+
+The candidate is built, verified and waiting: `CANDIDATE_C_nograph_0.5252.csv`.
+**Nothing has been submitted and nothing will be without your explicit say-so.**
+
+What is left is genuinely thin. The three big knobs are now measured out:
+hyperparameters are at a flat optimum, the feature block gave what it had, and
+horizon decay is not fixable from our side. The one materially different lever
+we have never pulled is the per-entity target encoding in the open decision
+above -- still your call, and still measurable without submitting anything.
