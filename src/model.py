@@ -7,7 +7,10 @@ from sklearn.metrics import average_precision_score, precision_score, recall_sco
 from src.config import ID_COLS, LABEL_COL, TIME_COL, SEED, FEVAL_SUBSAMPLE_SIZE
 
 CAT_COLS = ["merchant_category", "device_type", "location", "payment_method", "transaction_type"]
-EXCLUDE_COLS = set(ID_COLS) | {LABEL_COL, TIME_COL, "is_test"}
+# log_amount_bdt is a helper column for the log-space z-scores, not a model
+# feature: it is a monotonic transform of amount_bdt, so it yields identical
+# tree splits and identical AP while consuming a feature_fraction slot.
+EXCLUDE_COLS = set(ID_COLS) | {LABEL_COL, TIME_COL, "is_test", "log_amount_bdt"}
 
 
 def get_feature_columns(df: pd.DataFrame):
@@ -23,6 +26,12 @@ def prepare_lgb_frame(df: pd.DataFrame, feature_cols, cat_cols) -> pd.DataFrame:
     X = df[feature_cols].copy()
     for c in cat_cols:
         X[c] = X[c].astype("category")
+    # float32 halves memory (this box has 7GB RAM and the frame grew to 124
+    # columns). LightGBM histogram-bins features anyway, so the reduced
+    # precision does not change the splits it can find.
+    for c in X.columns:
+        if X[c].dtype == "float64":
+            X[c] = X[c].astype("float32")
     for banned in ID_COLS:
         assert banned not in X.columns, f"banned raw ID column {banned} leaked into feature matrix"
     assert LABEL_COL not in X.columns
@@ -55,14 +64,15 @@ def make_pr_auc_feval(y_valid: np.ndarray, seed: int = SEED, subsample_size: int
 
 
 def train_lgb(X_train, y_train, X_valid, y_valid, cat_cols, seed: int = SEED):
-    n_pos = max(1, int(y_train.sum()))
-    n_neg = len(y_train) - n_pos
-    scale_pos_weight = n_neg / n_pos
-
+    # NO scale_pos_weight. PLAN.md originally prescribed neg/pos (~55x) for the
+    # 1.76% imbalance, and every hyperparameter sweep held it fixed, so it went
+    # untested until late. Measured on fold 3, less weighting is monotonically
+    # better: spw=55 -> 0.5045, spw=10 -> 0.5069, spw=7.4 -> 0.5091,
+    # spw=1 -> 0.5116 +/- 0.0020 (3 seeds). PR-AUC is a RANK metric; upweighting
+    # positives distorts the ranking it is scored on. +0.0071 = 3.5x seed std.
     params = dict(
         objective="binary",
         metric="None",
-        scale_pos_weight=scale_pos_weight,
         seed=seed,
         bagging_seed=seed,
         feature_fraction_seed=seed,

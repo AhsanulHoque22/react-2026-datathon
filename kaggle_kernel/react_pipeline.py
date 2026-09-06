@@ -1,19 +1,79 @@
-"""Leakage-safe behavioral feature engineering (PLAN.md "Feature engineering").
+"""REACT 2026 Datathon -- full pipeline, generated from src/ by
+scripts/build_kaggle_kernel.py. Do not edit here; edit src/ and regenerate.
 
-Core rule enforced throughout: every feature for row i must depend only on
-rows strictly before row i in time (ties broken by transaction_id). All
-expanding stats are computed via cumsum/cumcount tricks that exclude the
-current row's own value, not `.expanding()` + `.shift(1)` (equivalent, but
-vectorized and far faster at ~1M rows x tens of thousands of groups).
-
-Banned per PLAN.md: raw ID columns as model features, and any per-entity
-fraud-rate/target encoding. Nothing here touches the `fraud` column.
+Leakage-safe behavioural feature engineering + LightGBM, trained on a
+chronological split. Every engineered feature for a row at time t uses only
+rows strictly before t (ties broken by transaction_id). No raw entity IDs
+reach the model, and nothing touches the fraud label except the label itself.
 """
+import gc
+import time
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
+import lightgbm as lgb
+from sklearn.metrics import average_precision_score, precision_score, recall_score
 
-from src.config import TIME_COL
+RAW_DIR = Path("/kaggle/input/react-2026-datathon")
+OUT_DIR = Path("/kaggle/working")
+TRAIN_CSV = RAW_DIR / "train.csv"
+TEST_CSV = RAW_DIR / "test.csv"
+SAMPLE_SUBMISSION_CSV = RAW_DIR / "sample_submission.csv"
 
+# ===================== src/config.py =====================
+SEED = 42
+
+
+
+# Raw ID / label columns that must NEVER enter the model's feature matrix directly
+# (PLAN.md "Banned" section). Kept only as join keys during feature engineering.
+ID_COLS = ["customer_id", "merchant_id", "device_id", "transaction_id"]
+LABEL_COL = "fraud"
+TIME_COL = "timestamp"
+
+# Walk-forward CV fold windows (PLAN.md "Validation" section).
+# Each fold's test window; train = all rows strictly before the window's start.
+CV_FOLDS = [
+    ("2026-05-21", "2026-06-04"),
+    ("2026-06-04", "2026-06-18"),
+    ("2026-06-18", "2026-07-02"),
+    ("2026-07-02", "2026-07-15"),
+]
+
+FEVAL_SUBSAMPLE_SIZE = 120_000
+
+# ===================== src/data.py =====================
+def load_raw():
+    train = pd.read_csv(TRAIN_CSV, parse_dates=[TIME_COL])
+    test = pd.read_csv(TEST_CSV, parse_dates=[TIME_COL])
+    return train, test
+
+
+def build_combined_frame(train: pd.DataFrame, test: pd.DataFrame) -> pd.DataFrame:
+    """Concatenate train+test, sort by (timestamp, transaction_id), tag split."""
+    train = train.copy()
+    test = test.copy()
+    train["is_test"] = False
+    test["is_test"] = True
+    if LABEL_COL not in test.columns:
+        test[LABEL_COL] = np.nan
+
+    df = pd.concat([train, test], axis=0, ignore_index=True)
+    df = df.sort_values([TIME_COL, "transaction_id"], kind="mergesort").reset_index(drop=True)
+    return df
+
+
+def assert_frame_sane(df: pd.DataFrame):
+    assert df[TIME_COL].is_monotonic_increasing, "frame not sorted by timestamp after tie-break sort"
+    # tie-break key must also be non-decreasing within any timestamp tie
+    dup_ts = df[TIME_COL].duplicated(keep=False)
+    if dup_ts.any():
+        sub = df.loc[dup_ts, [TIME_COL, "transaction_id"]]
+        for _, g in sub.groupby(TIME_COL):
+            assert g["transaction_id"].is_monotonic_increasing, "tie-break key not sorted within a timestamp tie"
+
+# ===================== src/features.py =====================
 EPS = 1e-6
 
 
@@ -314,3 +374,230 @@ def leakage_assertions(df: pd.DataFrame):
     assert (df.loc[first_cust, "is_new_device_for_customer"] == 1).all(), (
         "leak: a customer's first transaction should always be a new device pairing"
     )
+
+# ===================== src/model.py =====================
+CAT_COLS = ["merchant_category", "device_type", "location", "payment_method", "transaction_type"]
+# log_amount_bdt is a helper column for the log-space z-scores, not a model
+# feature: it is a monotonic transform of amount_bdt, so it yields identical
+# tree splits and identical AP while consuming a feature_fraction slot.
+EXCLUDE_COLS = set(ID_COLS) | {LABEL_COL, TIME_COL, "is_test", "log_amount_bdt"}
+
+
+def get_feature_columns(df: pd.DataFrame):
+    feature_cols = [c for c in df.columns if c not in EXCLUDE_COLS]
+    cat_cols = [c for c in CAT_COLS if c in feature_cols]
+    return feature_cols, cat_cols
+
+
+def prepare_lgb_frame(df: pd.DataFrame, feature_cols, cat_cols) -> pd.DataFrame:
+    """Return a copy of df[feature_cols] with categoricals cast to pandas 'category'
+    dtype (LightGBM native categorical handling) and raw ID / label columns absent
+    (banned per PLAN.md — asserted, not just assumed)."""
+    X = df[feature_cols].copy()
+    for c in cat_cols:
+        X[c] = X[c].astype("category")
+    # float32 halves memory (this box has 7GB RAM and the frame grew to 124
+    # columns). LightGBM histogram-bins features anyway, so the reduced
+    # precision does not change the splits it can find.
+    for c in X.columns:
+        if X[c].dtype == "float64":
+            X[c] = X[c].astype("float32")
+    for banned in ID_COLS:
+        assert banned not in X.columns, f"banned raw ID column {banned} leaked into feature matrix"
+    assert LABEL_COL not in X.columns
+    return X
+
+
+def make_pr_auc_feval(y_valid: np.ndarray, seed: int = SEED, subsample_size: int = FEVAL_SUBSAMPLE_SIZE):
+    """Fixed (not resampled per round) stratified subsample of the validation
+    fold, used to keep average_precision_score cheap across boosting rounds."""
+    n = len(y_valid)
+    if n <= subsample_size:
+        idx = np.arange(n)
+    else:
+        rng = np.random.RandomState(seed)
+        pos_idx = np.where(y_valid == 1)[0]
+        neg_idx = np.where(y_valid == 0)[0]
+        frac = subsample_size / n
+        n_pos = max(1, int(round(len(pos_idx) * frac)))
+        n_neg = subsample_size - n_pos
+        pos_sample = rng.choice(pos_idx, size=min(n_pos, len(pos_idx)), replace=False)
+        neg_sample = rng.choice(neg_idx, size=min(n_neg, len(neg_idx)), replace=False)
+        idx = np.concatenate([pos_sample, neg_sample])
+
+    def feval(preds, train_data):
+        labels = train_data.get_label()
+        score = average_precision_score(labels[idx], preds[idx])
+        return "pr_auc", score, True
+
+    return feval
+
+
+def train_lgb(X_train, y_train, X_valid, y_valid, cat_cols, seed: int = SEED):
+    # NO scale_pos_weight. PLAN.md originally prescribed neg/pos (~55x) for the
+    # 1.76% imbalance, and every hyperparameter sweep held it fixed, so it went
+    # untested until late. Measured on fold 3, less weighting is monotonically
+    # better: spw=55 -> 0.5045, spw=10 -> 0.5069, spw=7.4 -> 0.5091,
+    # spw=1 -> 0.5116 +/- 0.0020 (3 seeds). PR-AUC is a RANK metric; upweighting
+    # positives distorts the ranking it is scored on. +0.0071 = 3.5x seed std.
+    params = dict(
+        objective="binary",
+        metric="None",
+        seed=seed,
+        bagging_seed=seed,
+        feature_fraction_seed=seed,
+        verbosity=-1,
+        learning_rate=0.05,
+        num_leaves=63,
+        feature_fraction=0.85,
+        bagging_fraction=0.85,
+        bagging_freq=1,
+        min_data_in_leaf=50,
+    )
+
+    train_set = lgb.Dataset(X_train, label=y_train, categorical_feature=cat_cols, free_raw_data=False)
+    valid_set = lgb.Dataset(X_valid, label=y_valid, categorical_feature=cat_cols, reference=train_set, free_raw_data=False)
+
+    feval = make_pr_auc_feval(y_valid.values if hasattr(y_valid, "values") else y_valid, seed=seed)
+
+    booster = lgb.train(
+        params,
+        train_set,
+        num_boost_round=3000,
+        valid_sets=[valid_set],
+        feval=feval,
+        callbacks=[lgb.early_stopping(stopping_rounds=100, verbose=False), lgb.log_evaluation(period=0)],
+    )
+    return booster
+
+
+def precision_recall_at_k(y_true, y_score, k_frac):
+    n = len(y_true)
+    k = max(1, int(round(n * k_frac)))
+    order = np.argsort(-y_score)
+    top_k_idx = order[:k]
+    y_pred = np.zeros(n, dtype=int)
+    y_pred[top_k_idx] = 1
+    prec = precision_score(y_true, y_pred, zero_division=0)
+    rec = recall_score(y_true, y_pred, zero_division=0)
+    return prec, rec
+
+SEEDS = [0, 1, 2, 3, 4]
+FINAL_PARAMS = dict(
+    objective="binary", metric="None", verbosity=-1, learning_rate=0.05,
+    num_leaves=63, feature_fraction=0.85, bagging_fraction=0.85,
+    bagging_freq=1, min_data_in_leaf=50,
+)
+
+
+# ----------------------------- pipeline ------------------------------------
+def main():
+    t0 = time.time()
+    print("Loading raw data...", flush=True)
+    train = pd.read_csv(TRAIN_CSV, parse_dates=[TIME_COL])
+    test = pd.read_csv(TEST_CSV, parse_dates=[TIME_COL])
+    print(f"train={train.shape} test={test.shape} ({time.time()-t0:.1f}s)", flush=True)
+
+    df = build_combined_frame(train, test)
+    assert_frame_sane(df)
+    del train, test
+    gc.collect()
+
+    print("Building features...", flush=True)
+    df = build_features(df)
+    leakage_assertions(df)
+    print(f"featurized={df.shape} ({time.time()-t0:.1f}s)", flush=True)
+
+    feature_cols, cat_cols = get_feature_columns(df)
+    frame_time_sorted = bool(df[TIME_COL].is_monotonic_increasing)
+    labeled = df[~df["is_test"]]
+    test_df = df[df["is_test"]]
+
+    # ---- walk-forward CV: report per fold, and the fold that matters ----
+    print("\n=== Walk-forward CV ===", flush=True)
+    fold_scores = {}
+    for i, (start, end) in enumerate(CV_FOLDS):
+        s_ts, e_ts = pd.Timestamp(start), pd.Timestamp(end)
+        tr = labeled.loc[labeled[TIME_COL] < s_ts]
+        va = labeled.loc[(labeled[TIME_COL] >= s_ts) & (labeled[TIME_COL] < e_ts)]
+        X_tr, y_tr = prepare_lgb_frame(tr, feature_cols, cat_cols), tr[LABEL_COL].astype(int)
+        X_va, y_va = prepare_lgb_frame(va, feature_cols, cat_cols), va[LABEL_COL].astype(int)
+        bst = train_lgb(X_tr, y_tr, X_va, y_va, cat_cols)
+        p = bst.predict(X_va, num_iteration=bst.best_iteration)
+        ap = average_precision_score(y_va, p)
+        has_hist = (va["cust_history_count"] > 0).values
+        ap_hist = average_precision_score(y_va[has_hist], p[has_hist]) if has_hist.sum() else float("nan")
+        ap_cold = average_precision_score(y_va[~has_hist], p[~has_hist]) if (~has_hist).sum() else float("nan")
+        pk, _ = precision_recall_at_k(y_va.values, p, 0.005)
+        _, rk = precision_recall_at_k(y_va.values, p, 0.01)
+        fold_scores[i] = ap
+        print(f"fold{i} [{start}->{end}] PR-AUC={ap:.4f} (hist={ap_hist:.4f} cold={ap_cold:.4f}) "
+              f"P@0.5%={pk:.3f} R@1%={rk:.3f} iter={bst.best_iteration}", flush=True)
+        del X_tr, X_va, bst
+        gc.collect()
+
+    vals = np.array(list(fold_scores.values()))
+    print(f"mean={vals.mean():.4f} min={vals.min():.4f} max={vals.max():.4f} std={vals.std():.4f}")
+    print(f"LAST fold (the one that tracks the leaderboard) = {vals[-1]:.4f}", flush=True)
+
+    # ---- iteration count from a held-out tail, then seed-averaged refit ----
+    holdout_start = pd.Timestamp("2026-07-01")
+    fit_df = labeled.loc[labeled[TIME_COL] < holdout_start]
+    hold_df = labeled.loc[labeled[TIME_COL] >= holdout_start]
+    X_fit, y_fit = prepare_lgb_frame(fit_df, feature_cols, cat_cols), fit_df[LABEL_COL].astype(int)
+    X_hold, y_hold = prepare_lgb_frame(hold_df, feature_cols, cat_cols), hold_df[LABEL_COL].astype(int)
+    probe = train_lgb(X_fit, y_fit, X_hold, y_hold, cat_cols)
+    probe_ap = average_precision_score(y_hold, probe.predict(X_hold, num_iteration=probe.best_iteration))
+    final_rounds = int(round(probe.best_iteration * 1.1))
+    print(f"\nHeld-out PR-AUC={probe_ap:.4f} best_iter={probe.best_iteration} -> rounds={final_rounds}", flush=True)
+    del X_fit, X_hold, probe
+    gc.collect()
+
+    X_full = prepare_lgb_frame(labeled, feature_cols, cat_cols)
+    y_full = labeled[LABEL_COL].astype(int)
+    X_test = prepare_lgb_frame(test_df, feature_cols, cat_cols)
+    test_ids = test_df["transaction_id"].values
+    del df, labeled, test_df
+    gc.collect()
+
+    print(f"Refitting on full train, averaged over {len(SEEDS)} seeds...", flush=True)
+    ds = lgb.Dataset(X_full, label=y_full, categorical_feature=cat_cols, free_raw_data=False)
+    seed_preds = []
+    last_bst = None
+    for s in SEEDS:
+        params = dict(FINAL_PARAMS, seed=s, bagging_seed=s, feature_fraction_seed=s)
+        bst = lgb.train(params, ds, num_boost_round=final_rounds)
+        seed_preds.append(bst.predict(X_test))
+        last_bst = bst
+        print(f"  seed {s} done ({time.time()-t0:.0f}s)", flush=True)
+    preds = np.mean(seed_preds, axis=0)
+
+    # ---- pre-submission assertions (PLAN.md checklist) ----
+    assert frame_time_sorted, "frame not time-sorted"
+    assert LABEL_COL not in X_test.columns
+    for c in ID_COLS:
+        assert c not in X_test.columns, f"banned raw ID column {c} in feature matrix"
+    assert np.all((preds >= 0) & (preds <= 1)), "predictions outside [0,1]"
+    assert not np.isnan(preds).any(), "NaN predictions"
+
+    sample = pd.read_csv(SAMPLE_SUBMISSION_CSV)
+    sub = pd.DataFrame({"transaction_id": test_ids, "fraud": preds})
+    sub = sub.set_index("transaction_id").loc[sample["transaction_id"]].reset_index()
+    assert list(sub["transaction_id"]) == list(sample["transaction_id"]), "row order mismatch"
+    assert sub.shape == sample.shape
+    assert sub["fraud"].between(0, 1).all()
+    assert (sub["fraud"] != sub["fraud"].round().astype(int)).any(), "looks thresholded to 0/1"
+
+    sub.to_csv(OUT_DIR / "submission.csv", index=False)
+    print(f"\nAll assertions passed. Wrote submission.csv {sub.shape} (total {time.time()-t0:.1f}s)")
+    print(sub["fraud"].describe())
+
+    imp = pd.Series(last_bst.feature_importance(importance_type="gain"),
+                    index=feature_cols).sort_values(ascending=False)
+    print("\nTop 20 features by gain:")
+    print(imp.head(20).to_string())
+    imp.to_csv(OUT_DIR / "feature_importance.csv")
+
+
+if __name__ == "__main__":
+    main()

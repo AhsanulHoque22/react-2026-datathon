@@ -246,7 +246,26 @@ error. Timeline rebuilt below from the real remaining hours.
     data doesn't support. Recency-weighted training with tuned half-lives
     stays exactly as already planned — a contingency *if* the per-fold trend
     plot shows decay, not pre-built.
-- **Class imbalance**: `scale_pos_weight`. No SMOTE.
+- **Class imbalance: NO class weighting (round 7 — reverses the original
+  prescription).** This plan specified `scale_pos_weight` = neg/pos (~55x)
+  from round 1, and every hyperparameter sweep varied leaves/learning-rate/
+  regularization while holding class weighting fixed, so it went untested
+  until late. Measured on fold 3, less weighting is monotonically better:
+  spw=55 -> 0.5045, spw=10 -> 0.5069, spw=7.4 -> 0.5091, spw=1 -> 0.5116
+  (mean of 3 seeds, std 0.0020). PR-AUC is a **rank** metric; upweighting
+  the positive class changes fitted probabilities in a way that distorts
+  the ranking it is actually scored on. +0.0071 = 3.5x the seed-noise
+  band. Still no SMOTE.
+- **Seed averaging (round 7)**: final fit averages predictions over 5 seeds.
+  Measured seed-to-seed std on a single fold is 0.0020, so averaging is
+  cheap variance reduction on a metric where our margins are this thin.
+- **Measure the noise floor before trusting any result (round 7)**: seed std
+  on fold 3 is 0.0020. Seven consecutive experiments (CatBoost, the
+  hyperparameter sweep, recency weighting, graph/cluster features, the
+  stationarity fixes, ratio features, expanded windows) produced deltas of
+  0.0015-0.002 -- at or below that floor, i.e. not measurable. Any future
+  claim of improvement needs either a multi-seed mean or an effect
+  comfortably larger than 0.002 before it counts.
 - **Calibration: cut entirely (new, round 3 — reverses the round-2 plan)**.
   `average_precision_score` is a rank metric; isotonic regression is *not*
   strictly monotonic (confirmed via a scikit-learn maintainer bug report —
