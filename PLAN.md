@@ -1,4 +1,9 @@
-# REACT 2026 — modeling plan (round 5 — final verbatim-verified check)
+# REACT 2026 — modeling plan (round 6 — execution + external validation)
+
+As of this revision: 2026-09-06 12:50 Dhaka, ~35.2h remaining to the
+2026-09-07 23:59:59 deadline. Well ahead of the timeline table below, which
+budgeted model iteration through T+30.5h — CatBoost, hyperparameter search,
+and the graph-feature stretch goal are already done by T+~4h.
 
 Original plan (pre-competition) assumed an IEEE-CIS-style analog with masked
 columns and a hidden entity ID needing reconstruction — wrong on both the
@@ -116,9 +121,29 @@ error. Timeline rebuilt below from the real remaining hours.
     trying to flag; the robust version is a one-line addition alongside the
     existing z-score, not a replacement, so the model can use whichever
     generalizes better.
+  - **Log-amount z-score (round 6)**: the same per-entity deviation as above
+    but on `log1p(amount_bdt)`, kept alongside the linear-scale z-score and
+    MAD variant, not instead of them. Amount is heavily right-skewed
+    (fraud amounts run to ~5x the legitimate max), so log-scale deviation is
+    better-behaved. Prompted by an independent teardown a teammate shared;
+    validated via CV as a real, consistent gain (see Why).
   - First-order relationship/fan-out counts: distinct customers per device so
     far, distinct devices per customer so far, is-new-device-for-customer
-    flag, is-new-merchant-for-customer flag.
+    flag, is-new-merchant-for-customer flag, **is-new-location-for-customer
+    (round 6, same pattern extended to location — also from the teardown,
+    also validated)**.
+  - **Second-order relationship/cluster features (round 6 — promoted from
+    stretch goal to adopted, by team decision)**: bipartite component size
+    (customer-device graph, customer-merchant graph), computed via an
+    incremental Union-Find rather than the originally-scoped
+    `scipy.sparse.csgraph.connected_components` — that function only
+    answers connectivity for a *fixed* graph snapshot, with no point-in-time
+    notion, so a single static call would leak later edges into earlier
+    rows. The incremental version reads an entity's current component size
+    before writing today's edge, giving exact per-row leakage safety. CV
+    showed this alone is net-neutral (0.6923 → 0.6929, inside the noise
+    floor) — kept anyway per team decision (write-up value, possible
+    signal under a different fold split), not because it's proven to help.
   - Frequency (count-based, not fraud-rate-based) encoding of
     `merchant_category`/`device_type`/`location`/`payment_method`/`transaction_type`.
   - Calendar features: hour-of-day, day-of-week, is-night, **plus cyclic
@@ -179,16 +204,8 @@ error. Timeline rebuilt below from the real remaining hours.
     NaN-routing handle the split; keep the is-new-* flags. Every walk-forward
     fold must report **PR-AUC split by has-history vs. cold-start rows** —
     one groupby.
-  - **Stretch goal only, not core**: second-order relationship/cluster
-    features (shared-device components, customer-device-merchant triangle
-    structure). **Implementation constraint (new, round 3)**: use
-    `scipy.sparse.csgraph.connected_components` on a sparse adjacency matrix
-    — scipy is already a transitive dependency via scikit-learn, so this is
-    a function-call swap, not a new dependency — never NetworkX, which does
-    not scale past roughly 100K nodes on commodity RAM and our entity counts
-    (38.7K customers, 19.1K devices, 4.2K merchants) sit right at that edge
-    once combined into a bipartite graph. Attempt only after the core
-    pipeline is solid and submitted.
+  - Second-order relationship/cluster features: see the "adopted, round 6"
+    bullet above — superseded from its original stretch-goal scoping.
 - **Validation**: time-ordered expanding-window walk-forward CV, ~4 folds
   tiling the last ~8 weeks of train (fold test-windows [05-21→06-04],
   [06-04→06-18], [06-18→07-02], [07-02→07-15], train = all rows strictly
@@ -380,3 +397,38 @@ ordering, the cold-start/tie-break/leakage mechanics — checked internally
 consistent with no contradictions. Timeline re-anchored to the exact current
 time (2026-09-06 08:50 Dhaka, ~39.2h remaining) rather than compounding
 drift from the round-3 anchor.
+
+**Round 6 (execution + a second independent data source)**: moved from
+planning to building. Submitted the insurance baseline (0.16644 public
+PR-AUC, raw fields only) and the first full-behavioral-pipeline model
+(0.51309 public PR-AUC) — the close match to walk-forward CV on the most
+recent fold (~0.50) was the strongest evidence yet that the pipeline has no
+leakage inflating validation. Tested the plan's own contingencies with real
+results: CatBoost as the opportunistic second model (PLAN.md's "only if
+hours allow with LightGBM solid") lost to LightGBM on every fold and no
+blend weight beat LightGBM alone — closed out as a negative result, single
+LightGBM confirmed empirically, not just assumed for time reasons. Merchant/
+device trailing windows (extending what was originally customer-only) gave
+a small real gain. A targeted hyperparameter search found no config beating
+current defaults beyond the established noise floor.
+
+A teammate then surfaced an independent EDA teardown (from an external,
+unverified source) with a materially higher CV score (0.768 mean vs. our
+0.6923 at the time). Read it directly rather than taking the comparison at
+face value: its highest-importance features (`te_dev`, `te_mer`, `te_cust`)
+are per-entity historical fraud-rate encodings — exactly the mechanism this
+plan's round-4 council unanimously rejected as violating the organizer's
+"targeting specific entity IDs rather than behavioral patterns" rule. Its
+score is real, but bought with a technique this plan explicitly excludes for
+disqualification-risk reasons the teardown never engages with; its CV also
+uses wider, looser folds than ours, independently inflating the comparison.
+**Not adopted** — the round-4 reasoning holds, now with concrete evidence of
+exactly what the tradeoff costs in score. Two of its compliant ideas were
+adopted and validated instead: a log-amount z-score (amount is heavily
+right-skewed) and an is-new-location-for-customer novelty flag (the same
+pattern already used for device/merchant). Combined with the previously
+net-neutral graph/cluster features (kept by team decision despite the
+neutral result), walk-forward CV improved from a mean of 0.6923 to 0.7117 —
+a consistent gain across every fold, including the drift fold, well beyond
+the noise floor established by the earlier hyperparameter and recency
+experiments.
