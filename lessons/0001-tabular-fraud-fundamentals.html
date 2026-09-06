@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lesson 0001: Tabular Fraud Machine Learning</title>
+  <link rel="stylesheet" href="../assets/style.css">
+</head>
+<body>
+  <div class="container">
+    <h1>Lesson 0001: Tabular Fraud Fundamentals</h1>
+    <div class="meta">Part of the <a href="../MISSION.md">REACT 2026 Datathon Mission</a> &bull; Time: 5 mins</div>
+
+    <h2>1. The Imbalance Trap</h2>
+    <p>In fraud detection, standard intuition about machine learning fails. Around <strong>98.3%</strong> of transactions are benign and only <strong>1.7%</strong> are fraud.</p>
+    
+    <div class="callout">
+      <strong>Mental Model:</strong> If a doctor diagnoses every patient as "healthy", they are 99% accurate, but cure 0 diseases. Accuracy is meaningless when the target event is rare.
+    </div>
+
+    <h2>2. Why Raw IDs Break Your Model</h2>
+    <p>Look at your columns: <code>customer_id</code>, <code>merchant_id</code>, <code>device_id</code>. Why can't we feed them directly to LightGBM?</p>
+    <ul>
+      <li><strong>Overfitting:</strong> The model memorizes that ID <code>C_1042</code> was once fraudulent and blindly flags it forever.</li>
+      <li><strong>Cold Start Problem:</strong> Test data contains brand new customers never seen in training. The tree has no split rule for unseen strings.</li>
+    </ul>
+    <p><strong>The Fix:</strong> Convert IDs into <em>behavioral summaries</em> (e.g. "Has this customer logged in from 4 new devices today?").</p>
+
+    <h2>3. The Golden Rule: Strictly-Prior Features</h2>
+    <p>When calculating an entity's past history (e.g., average transaction amount), you <strong>must not</strong> include the current row or future rows.</p>
+    <pre><code># Vectorized leak-safe trick in src/features.py:
+cum_sum = grp.cumsum()
+prior_sum = cum_sum - df['amount_bdt']  # Subtract current row!
+prior_count = grp.cumcount()            # 0-indexed, naturally excludes current row</code></pre>
+
+    <h2>Interactive Check</h2>
+    <div class="quiz-card">
+      <p><strong>Question:</strong> Why do we report PR-AUC (Precision-Recall AUC) instead of standard Accuracy or ROC-AUC for this competition?</p>
+      
+      <button class="quiz-option" onclick="check(this, false)">Accuracy runs too slowly on 700K rows of training data.</button>
+      <button class="quiz-option" onclick="check(this, true)">With 98.3% non-fraud, PR-AUC isolates performance on rare positive cases.</button>
+      <button class="quiz-option" onclick="check(this, false)">Tree-based models like LightGBM only output binary labels by default.</button>
+      
+      <div id="quiz-fb" class="feedback"></div>
+    </div>
+
+    <h2>Primary Source & Next Steps</h2>
+    <p>Read the canonical IEEE-CIS fraud detection breakdown linked in <a href="../RESOURCES.md">RESOURCES.md</a>. When you're ready, ask your mentor agent questions about this lesson or how to inspect the feature tables.</p>
+  </div>
+
+  <script>
+    function check(btn, isCorrect) {
+      const fb = document.getElementById('quiz-fb');
+      const all = document.querySelectorAll('.quiz-option');
+      all.forEach(b => b.disabled = true);
+      if (isCorrect) {
+        btn.classList.add('correct');
+        fb.style.display = 'block';
+        fb.style.background = '#eaffea';
+        fb.style.color = '#1a7f37';
+        fb.innerHTML = '<strong>Correct!</strong> PR-AUC ignores true negatives (the huge 98% non-fraud majority) and focuses strictly on whether flagged fraud is genuine.';
+      } else {
+        btn.classList.add('wrong');
+        fb.style.display = 'block';
+        fb.style.background = '#ffebe9';
+        fb.style.color = '#cf222e';
+        fb.innerHTML = '<strong>Try again:</strong> Remember class imbalance. A dummy model predicting 0 gives 98.3% accuracy easily without detecting any fraud.';
+      }
+    }
+  </script>
+</body>
+</html>
