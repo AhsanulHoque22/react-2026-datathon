@@ -1191,7 +1191,20 @@ FINAL_PARAMS = dict(
 )
 
 
-# ------------- ablation: do the new self-relative features help? -----------
+# ====== recover what we can of the v7 result, strictly-past only ===========
+# v7 was worth +0.0244 on the 60-day windows and is not submittable: its power
+# came from the FORWARD half of each window, which the organiser's
+# strictly-before-t rule forbids. The backward half (cust_cnt_1h,
+# seconds_since_last) the model already had, so nothing is recovered by
+# relabelling.
+#
+# What was never built is the backward family at the same resolution: a uniform
+# window ladder, past-only acceleration (short-window rate vs long-window
+# rate), amount against its own trailing window mean, and second/third-order
+# gaps. Those are legitimate and untested.
+#
+# Every arm passes assert_strictly_past(); nothing here reads a row at or
+# after t.
 def main():
     t0 = time.time()
     train = pd.read_csv(TRAIN_CSV, parse_dates=[TIME_COL])
@@ -1202,49 +1215,77 @@ def main():
     gc.collect()
     df = build_features(df)
     leakage_assertions(df)
-    feature_cols, cat_cols = get_feature_columns(df)
+    b_cols, _ = get_feature_columns(df)
+    BASE = [c for c in b_cols if "component_size_prior" not in c]
+
+    df = add_location_and_category_context_features(df)
+    for col, pre in (("customer_id", "cust"), ("device_id", "dev"), ("merchant_id", "merch")):
+        df = add_backward_rich_features(df, col, pre)
+    all_cols, cat_cols = get_feature_columns(df)
+    ALL = [c for c in all_cols if "component_size_prior" not in c]
+    CTX = [c for c in ALL if c in BASE or any(k in c for k in
+           ("loc_cnt_", "loc_amtsum_", "amt_vs_cat_mean_prior", "loc_amt_ratio",
+            "_amt_vs_24h_mean", "_burst_accel", "_smurf_ratio_1h", "pay_x_dev",
+            "cat_x_loc", "txn_x_pay"))]
+    BWD = [c for c in ALL if c not in CTX]
+    for cs in (BASE, CTX, ALL):
+        assert_strictly_past(cs)
+    print(f"base={len(BASE)}  +context={len(CTX)}  +backward={len(ALL)} "
+          f"(backward adds {len(BWD)}) ({time.time()-t0:.0f}s)", flush=True)
+
     labeled = df[~df["is_test"]]
     del df
     gc.collect()
-    print(f"featurized, {len(feature_cols)} features ({time.time()-t0:.0f}s)", flush=True)
 
-    NEW = [c for c in feature_cols if any(k in c for k in
-           ("_gap_accel", "_velocity_ratio_", "_amt_vs_prior_max",
-            "_is_record_amt", "_hour_bucket_share", "_new_hour_bucket"))]
-    print(f"{len(NEW)} new self-relative features: {NEW}", flush=True)
+    P = dict(objective="binary", metric="None", verbosity=-1, learning_rate=0.02,
+             num_leaves=127, feature_fraction=0.85, bagging_fraction=0.85,
+             bagging_freq=1, min_data_in_leaf=50)
+    WINDOWS = {"tail Jul01-15": ("2026-07-01", "2026-07-16"),
+               "LONG May17-Jul16": ("2026-05-17", "2026-07-16"),
+               "fold2-guard": ("2026-06-18", "2026-07-02")}
+    ARMS = {"A_base (arm C)": BASE, "B_+context": CTX, "C_+context+backward": ALL}
 
-    # Two windows: the tail is the leaderboard proxy, fold2 guards the easy regime.
-    WINDOWS = {"tail(Jul01-15)": ("2026-07-01", "2026-07-16"),
-               "fold2(Jun18-Jul02)": ("2026-06-18", "2026-07-02")}
-
-    def evaluate(cols, tag):
+    res = {}
+    for aname, cols in ARMS.items():
+        cc = [c for c in cat_cols if c in cols]
+        res[aname] = {}
         for wname, (s_, e_) in WINDOWS.items():
             s_ts, e_ts = pd.Timestamp(s_), pd.Timestamp(e_)
             tr = labeled.loc[labeled[TIME_COL] < s_ts]
             va = labeled.loc[(labeled[TIME_COL] >= s_ts) & (labeled[TIME_COL] < e_ts)]
-            cc = [c for c in cat_cols if c in cols]
             X_tr, y_tr = prepare_lgb_frame(tr, cols, cc), tr[LABEL_COL].astype(int)
             X_va, y_va = prepare_lgb_frame(va, cols, cc), va[LABEL_COL].astype(int)
             aps = []
             for seed in (0, 1, 2):
-                params = dict(objective="binary", metric="None", verbosity=-1,
-                              learning_rate=0.02, num_leaves=127, feature_fraction=0.85,
-                              bagging_fraction=0.85, bagging_freq=1, min_data_in_leaf=50,
-                              seed=seed, bagging_seed=seed, feature_fraction_seed=seed)
+                prm = dict(P, seed=seed, bagging_seed=seed, feature_fraction_seed=seed)
                 ds_tr = lgb.Dataset(X_tr, label=y_tr, categorical_feature=cc, free_raw_data=False)
-                ds_va = lgb.Dataset(X_va, label=y_va, categorical_feature=cc, reference=ds_tr, free_raw_data=False)
-                bst = lgb.train(params, ds_tr, num_boost_round=4000, valid_sets=[ds_va],
+                ds_va = lgb.Dataset(X_va, label=y_va, categorical_feature=cc,
+                                    reference=ds_tr, free_raw_data=False)
+                bst = lgb.train(prm, ds_tr, num_boost_round=4000, valid_sets=[ds_va],
                                 feval=make_pr_auc_feval(y_va.values, seed=seed),
                                 callbacks=[lgb.early_stopping(200, verbose=False),
                                            lgb.log_evaluation(period=0)])
                 aps.append(average_precision_score(y_va, bst.predict(X_va, num_iteration=bst.best_iteration)))
-            print(f"  {tag:22s} {wname:20s} {np.mean(aps):.4f} +/- {np.std(aps):.4f}  [{time.time()-t0:.0f}s]", flush=True)
+                if seed == 0 and wname.startswith("tail") and aname.startswith("C_"):
+                    imp = pd.Series(bst.feature_importance("gain"), index=cols).sort_values(ascending=False)
+                    tot = imp.sum()
+                    hits = [(c, round(100 * imp[c] / tot, 2)) for c in imp.index[:25] if c in BWD]
+                    print(f"      backward features in top-25: {hits if hits else 'NONE'}", flush=True)
+            res[aname][wname] = (float(np.mean(aps)), float(np.std(aps)))
+            print(f"  {aname:20s} {wname:18s} {np.mean(aps):.4f} +/- {np.std(aps):.4f} "
+                  f"[{time.time()-t0:.0f}s]", flush=True)
             del X_tr, X_va
             gc.collect()
 
-    print("\nABLATION (3 seeds each; seed-noise std is ~0.0020)")
-    evaluate([c for c in feature_cols if c not in NEW], "WITHOUT new")
-    evaluate(feature_cols, "WITH new")
+    print("\n======== COMPLIANT FEATURE ARMS (strictly before t) ========")
+    print(f"{'arm':22s}{'tail':>10}{'LONG':>10}{'guard':>10}{'vs base tail':>14}")
+    b = res["A_base (arm C)"]["tail Jul01-15"][0]
+    for a in ARMS:
+        print(f"{a:22s}{res[a]['tail Jul01-15'][0]:>10.4f}{res[a]['LONG May17-Jul16'][0]:>10.4f}"
+              f"{res[a]['fold2-guard'][0]:>10.4f}{res[a]['tail Jul01-15'][0]-b:>+14.4f}")
+    print(f"\nreference: v7 (NON-compliant, forward features) tail 0.5380")
+    print(f"           v5 (NON-compliant, propagation)       tail 0.5322 -> LB 0.56492")
+    print(f"           arm C (compliant)                     tail {b:.4f}")
 
 
 if __name__ == "__main__":

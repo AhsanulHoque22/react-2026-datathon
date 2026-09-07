@@ -6,7 +6,11 @@ from sklearn.metrics import average_precision_score, precision_score, recall_sco
 
 from src.config import ID_COLS, LABEL_COL, TIME_COL, SEED, FEVAL_SUBSAMPLE_SIZE
 
-CAT_COLS = ["merchant_category", "device_type", "location", "payment_method", "transaction_type"]
+CAT_COLS = ["merchant_category", "device_type", "location", "payment_method", "transaction_type",
+            # coarse-attribute crosses from add_location_and_category_context_features;
+            # they are strings, so they must be declared categorical or they reach
+            # LightGBM as raw objects and it refuses the frame.
+            "pay_x_dev", "cat_x_loc", "txn_x_pay"]
 # log_amount_bdt is a helper column for the log-space z-scores, not a model
 # feature: it is a monotonic transform of amount_bdt, so it yields identical
 # tree splits and identical AP while consuming a feature_fraction slot.
@@ -35,6 +39,21 @@ def prepare_lgb_frame(df: pd.DataFrame, feature_cols, cat_cols) -> pd.DataFrame:
     for banned in ID_COLS:
         assert banned not in X.columns, f"banned raw ID column {banned} leaked into feature matrix"
     assert LABEL_COL not in X.columns
+    # LightGBM accepts only int/float/bool/category. Anything else gets past
+    # every other check here and then fails at Dataset construction, i.e. after
+    # the features are built -- an expensive place to find out.
+    #
+    # Allowlist, not a blocklist on `object`: pandas reports these columns as
+    # dtype `str` here and `object` on Kaggle, so testing for `object` alone
+    # passes locally and still fails there.
+    def _lgb_ok(dt):
+        return (pd.api.types.is_numeric_dtype(dt) or pd.api.types.is_bool_dtype(dt)
+                or isinstance(dt, pd.CategoricalDtype))
+    bad = [c for c in X.columns if not _lgb_ok(X[c].dtype)]
+    assert not bad, (
+        f"object-dtype columns reached the feature matrix: {bad}. Declare them in "
+        "CAT_COLS or drop them."
+    )
     return X
 
 

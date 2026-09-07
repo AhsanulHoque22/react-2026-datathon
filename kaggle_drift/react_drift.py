@@ -869,8 +869,83 @@ def assert_strictly_past(feature_cols) -> None:
         f"strictly-before-t rule: {bad[:12]}{'...' if len(bad) > 12 else ''}"
     )
 
+
+def add_backward_rich_features(df: pd.DataFrame, entity_col: str, prefix: str,
+                               windows_min=(5, 15, 60, 180, 720, 1440)) -> pd.DataFrame:
+    """The strictly-past half of the forward family.
+
+    The forward experiment showed this shape of feature carries a lot of
+    signal, but its gain came from the FORWARD half, which the organiser's
+    strictly-before-t rule forbids. These are the backward analogues that were
+    never built:
+
+      bwd_cnt/amtsum on a uniform ladder   -- the existing trailing windows are
+                                              an uneven mix per entity
+      rate_ratio_a_b  short-window rate vs long-window rate -- acceleration
+                      using only the past
+      amt_vs_bwd_w    this amount against its own trailing window mean
+      seconds_since_last2 / last3, and the gap ratio between them -- is the
+                      entity's spacing tightening
+
+    Every window is [t-w, t): the row itself and everything after it is
+    excluded, so this passes assert_strictly_past()."""
+    t = (df[TIME_COL] - df[TIME_COL].min()).dt.total_seconds().to_numpy()
+    codes = pd.factorize(df[entity_col].astype(str))[0].astype("int64")
+    amt = df["amount_bdt"].to_numpy(dtype="float64")
+    n = len(df)
+
+    max_sec = max(windows_min) * 60.0
+    span = (t.max() - t.min()) + max_sec + 1.0
+    key = codes * span + t
+    o = np.argsort(key, kind="stable")
+    ks, amts = key[o], amt[o]
+    csum = np.concatenate([[0.0], np.cumsum(amts)])
+    idx = np.arange(n)
+    new = {}
+
+    def scatter(name, arr_sorted):
+        z = np.empty(n, dtype="float64")
+        z[o] = arr_sorted
+        new[name] = z
+
+    counts = {}
+    for w in windows_min:
+        lo = np.searchsorted(ks, ks - w * 60.0, side="left")
+        c = (idx - lo).astype("float64")            # strictly prior: excludes self
+        a = csum[idx] - csum[lo]
+        counts[w] = c
+        scatter(f"{prefix}_bwd_cnt_{w}m", c)
+        scatter(f"{prefix}_bwd_amtsum_{w}m", a)
+        scatter(f"{prefix}_amt_vs_bwd_{w}m", amts / (a / np.maximum(c, 1.0) + EPS))
+
+    # acceleration from the past only: short-window rate against long-window rate
+    for short, long_ in ((5, 60), (15, 180), (60, 1440)):
+        if short in counts and long_ in counts:
+            rate_s = counts[short] / float(short)
+            rate_l = counts[long_] / float(long_)
+            scatter(f"{prefix}_rate_ratio_{short}_{long_}", (rate_s + 1e-9) / (rate_l + 1e-9))
+
+    ts = t[o]
+    same1 = np.zeros(n, dtype=bool)
+    same1[1:] = codes[o][1:] == codes[o][:-1]
+    prev1 = np.full(n, np.nan)
+    prev1[1:] = np.where(same1[1:], ts[1:] - ts[:-1], np.nan)
+    scatter(f"{prefix}_seconds_since_last2_gap", prev1)
+    if n > 2:
+        same2 = np.zeros(n, dtype=bool)
+        same2[2:] = codes[o][2:] == codes[o][:-2]
+        prev2 = np.full(n, np.nan)
+        prev2[2:] = np.where(same2[2:], ts[2:] - ts[:-2], np.nan)
+        scatter(f"{prefix}_seconds_since_last2", prev2)
+        scatter(f"{prefix}_gap_tightening", (prev1 + 1.0) / (prev2 - prev1 + 1.0))
+    return pd.concat([df, pd.DataFrame(new, index=df.index)], axis=1)
+
 # ===================== src/model.py =====================
-CAT_COLS = ["merchant_category", "device_type", "location", "payment_method", "transaction_type"]
+CAT_COLS = ["merchant_category", "device_type", "location", "payment_method", "transaction_type",
+            # coarse-attribute crosses from add_location_and_category_context_features;
+            # they are strings, so they must be declared categorical or they reach
+            # LightGBM as raw objects and it refuses the frame.
+            "pay_x_dev", "cat_x_loc", "txn_x_pay"]
 # log_amount_bdt is a helper column for the log-space z-scores, not a model
 # feature: it is a monotonic transform of amount_bdt, so it yields identical
 # tree splits and identical AP while consuming a feature_fraction slot.
@@ -899,6 +974,21 @@ def prepare_lgb_frame(df: pd.DataFrame, feature_cols, cat_cols) -> pd.DataFrame:
     for banned in ID_COLS:
         assert banned not in X.columns, f"banned raw ID column {banned} leaked into feature matrix"
     assert LABEL_COL not in X.columns
+    # LightGBM accepts only int/float/bool/category. Anything else gets past
+    # every other check here and then fails at Dataset construction, i.e. after
+    # the features are built -- an expensive place to find out.
+    #
+    # Allowlist, not a blocklist on `object`: pandas reports these columns as
+    # dtype `str` here and `object` on Kaggle, so testing for `object` alone
+    # passes locally and still fails there.
+    def _lgb_ok(dt):
+        return (pd.api.types.is_numeric_dtype(dt) or pd.api.types.is_bool_dtype(dt)
+                or isinstance(dt, pd.CategoricalDtype))
+    bad = [c for c in X.columns if not _lgb_ok(X[c].dtype)]
+    assert not bad, (
+        f"object-dtype columns reached the feature matrix: {bad}. Declare them in "
+        "CAT_COLS or drop them."
+    )
     return X
 
 

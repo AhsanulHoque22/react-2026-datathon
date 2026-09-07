@@ -1,0 +1,14 @@
+{
+  "id": "ahsanulhoque48cu/react-2026-back",
+  "title": "REACT 2026 Back",
+  "code_file": "react_back.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": false,
+  "enable_tpu": false,
+  "enable_internet": false,
+  "dataset_sources": [],
+  "competition_sources": ["react-2026-datathon"],
+  "kernel_sources": []
+}
