@@ -177,3 +177,42 @@ def blocked_loo_blend(preds, entity_ids, timestamps, w: float = PROP_W,
     p = np.asarray(preds, dtype="float64")
     loo = np.mean([_loo_mean(p, ids, block) for ids in entity_ids.values()], axis=0)
     return (1.0 - w) * p + w * loo
+
+
+def sliding_loo_blend(preds, entity_ids, timestamps, w: float = 0.2, window_minutes: float = 60.0):
+    """Leave-one-out blend over a true SLIDING time window per entity.
+
+    Fixed blocks get crude as the window tightens -- two transactions ten
+    minutes apart can fall either side of a boundary and never see each other.
+    This uses a real +/- window instead.
+
+    Vectorised by offsetting each entity's timestamps into its own disjoint
+    band (entity_code * span), so one global searchsorted respects entity
+    boundaries without a per-group loop."""
+    if not isinstance(entity_ids, dict):
+        entity_ids = {"entity": entity_ids}
+    ts = pd.to_datetime(pd.Series(np.asarray(timestamps)).reset_index(drop=True))
+    # NOT astype("int64")/1e9: pandas 2.x picks the datetime resolution from the
+    # input (us here, not ns), so that silently scales the clock by 1000.
+    # total_seconds() is resolution-independent.
+    t = (ts - ts.min()).dt.total_seconds().to_numpy() / 60.0   # minutes
+    p = np.asarray(preds, dtype="float64")
+    half = float(window_minutes) / 2.0
+
+    loos = []
+    for ids in entity_ids.values():
+        codes = pd.factorize(pd.Series(np.asarray(ids)).astype(str))[0].astype("int64")
+        span = (t.max() - t.min()) + 2 * half + 1.0
+        key = codes * span + t
+        order = np.argsort(key, kind="stable")
+        ks, ps = key[order], p[order]
+        csum = np.concatenate([[0.0], np.cumsum(ps)])
+        lo = np.searchsorted(ks, ks - half, side="left")
+        hi = np.searchsorted(ks, ks + half, side="right")
+        n = (hi - lo).astype("float64")
+        tot = csum[hi] - csum[lo]
+        loo_sorted = np.where(n > 1, (tot - ps) / np.maximum(n - 1, 1), ps)
+        loo = np.empty_like(loo_sorted)
+        loo[order] = loo_sorted
+        loos.append(loo)
+    return (1.0 - w) * p + w * np.mean(loos, axis=0)

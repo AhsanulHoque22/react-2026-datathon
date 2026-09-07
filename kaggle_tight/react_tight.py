@@ -876,17 +876,18 @@ FINAL_PARAMS = dict(
 )
 
 
-# ====== what does July fraud actually look like? ===========================
-# The decay audit answered "which signals stopped working". It never asked the
-# other half: what DOES discriminate fraud in July? Our whole feature basis
-# encodes "unusual amount / velocity / novelty for this customer", and if the
-# new regime's fraud is normal on all three then the basis is blind to it and
-# no amount of tuning helps.
+# ====== how tight does the propagation window go, and how hard? ============
+# The block sweep ran monotone to its floor: 1h beat everything at every
+# weight, and the best weight (0.2) was the largest tested and still climbing.
+# Both edges of that grid are unexplored.
 #
-# Three passes, cheapest first:
-#   1. raw-field contrast -- where July fraud concentrates vs June fraud
-#   2. per-feature univariate AP in June vs July -- which features GAINED
-#   3. a July-only model's importance vs the full model's
+# It also switches to a real SLIDING window. Fixed blocks are crude at this
+# scale -- two transactions ten minutes apart can land either side of a
+# boundary and never see each other -- and the tighter the window the more
+# that costs. Fixed 1h is kept as the control.
+#
+# Coverage collapses fast (a 1h block already touches only 3.7% of test
+# customer rows), so this must turn somewhere.
 def main():
     t0 = time.time()
     train = pd.read_csv(TRAIN_CSV, parse_dates=[TIME_COL])
@@ -898,83 +899,74 @@ def main():
     df = build_features(df)
     feature_cols, cat_cols = get_feature_columns(df)
     cols = [c for c in feature_cols if "component_size_prior" not in c]
-    lab = df[~df["is_test"]].copy()
+    cc = [c for c in cat_cols if c in cols]
+    labeled = df[~df["is_test"]]
     del df
     gc.collect()
+    print(f"featurized, {len(cols)} features ({time.time()-t0:.0f}s)", flush=True)
 
-    JUN = (lab[TIME_COL] >= "2026-06-01") & (lab[TIME_COL] < "2026-07-01")
-    JUL = (lab[TIME_COL] >= "2026-07-01") & (lab[TIME_COL] < "2026-07-16")
-    jun, jul = lab[JUN], lab[JUL]
-    print(f"June {len(jun)} rows {int(jun[LABEL_COL].sum())} frauds ({jun[LABEL_COL].mean():.4f}) | "
-          f"July {len(jul)} rows {int(jul[LABEL_COL].sum())} frauds ({jul[LABEL_COL].mean():.4f})",
-          flush=True)
+    MINUTES = [5, 15, 30, 60, 120, 240]
+    WEIGHTS = [0.15, 0.2, 0.3, 0.4, 0.5]
+    WINDOWS = {"LONG May17-Jul16": ("2026-05-17", "2026-07-16"),
+               "LONG Apr01-Jun01": ("2026-04-01", "2026-06-01")}
 
-    # ---- 1. raw categorical/behavioural contrast ---------------------------
-    print("\n===== 1. WHERE FRAUD SITS: lift by category, June vs July =====")
-    print("(lift = P(fraud|value) / P(fraud) that month; shown where n_fraud >= 15)")
-    for c in ["merchant_category", "device_type", "location", "payment_method", "transaction_type"]:
-        print(f"\n  --- {c} ---")
-        rows = []
-        for v in sorted(set(jun[c].dropna().unique()) | set(jul[c].dropna().unique())):
-            a, b = jun[jun[c] == v], jul[jul[c] == v]
-            if len(a) < 200 or len(b) < 200:
-                continue
-            la = (a[LABEL_COL].mean() / jun[LABEL_COL].mean()) if jun[LABEL_COL].mean() else np.nan
-            lb = (b[LABEL_COL].mean() / jul[LABEL_COL].mean()) if jul[LABEL_COL].mean() else np.nan
-            rows.append((lb - la, v, la, lb, int(a[LABEL_COL].sum()), int(b[LABEL_COL].sum())))
-        for d, v, la, lb, na, nb in sorted(rows, reverse=True):
-            flag = "  <== EMERGING" if d > 0.25 and nb >= 15 else ("  (dying)" if d < -0.25 else "")
-            print(f"    {str(v)[:26]:28s} Jun {la:5.2f}x -> Jul {lb:5.2f}x  (d {d:+.2f}, "
-                  f"{na}/{nb} frauds){flag}")
-
-    # ---- 2. univariate AP per feature, June vs July ------------------------
-    print("\n===== 2. FEATURES THAT GAINED POWER IN JULY (univariate AP) =====")
-    yj, yl = jun[LABEL_COL].values, jul[LABEL_COL].values
-    scored = []
-    for c in cols:
-        a, b = jun[c].values, jul[c].values
-        if not np.issubdtype(np.asarray(a).dtype, np.number):
-            continue
-        af = np.nan_to_num(a.astype("float64"), nan=0.0)
-        bf = np.nan_to_num(b.astype("float64"), nan=0.0)
-        try:  # AP is direction-sensitive; take the better orientation
-            apa = max(average_precision_score(yj, af), average_precision_score(yj, -af))
-            apb = max(average_precision_score(yl, bf), average_precision_score(yl, -bf))
-        except Exception:
-            continue
-        scored.append((apb - apa, apa, apb, c))
-    scored.sort(reverse=True)
-    print(f"  {'feature':46s}{'Jun AP':>9}{'Jul AP':>9}{'delta':>9}")
-    print("  -- biggest GAINS (candidate new-regime signal) --")
-    for d, apa, apb, c in scored[:15]:
-        print(f"  {c:46s}{apa:>9.4f}{apb:>9.4f}{d:>+9.4f}")
-    print("  -- biggest LOSSES (the dying signature) --")
-    for d, apa, apb, c in scored[-10:]:
-        print(f"  {c:46s}{apa:>9.4f}{apb:>9.4f}{d:>+9.4f}")
-
-    # ---- 3. a July-only model vs the full model ----------------------------
-    print("\n===== 3. WHAT A JULY-ONLY MODEL LEANS ON =====", flush=True)
-    cc = [c for c in cat_cols if c in cols]
-    prm = dict(objective="binary", metric="None", verbosity=-1, learning_rate=0.05,
-               num_leaves=31, min_data_in_leaf=20, feature_fraction=0.8,
-               bagging_fraction=0.8, bagging_freq=1, seed=0)
-    for tag, sub in (("JULY-only (Jul01-16)", jul), ("JUNE-only (Jun01-Jul01)", jun)):
-        X = prepare_lgb_frame(sub, cols, cc)
-        b = lgb.train(prm, lgb.Dataset(X, label=sub[LABEL_COL].astype(int),
-                                       categorical_feature=cc, free_raw_data=False),
-                      num_boost_round=250)
-        imp = pd.Series(b.feature_importance("gain"), index=cols).sort_values(ascending=False)
-        tot = imp.sum()
-        print(f"\n  {tag} top-15 by gain:")
-        for c in imp.index[:15]:
-            print(f"    {c:46s}{100*imp[c]/tot:6.2f}%")
-        del X
+    res = {}
+    for wname, (s_, e_) in WINDOWS.items():
+        s_ts, e_ts = pd.Timestamp(s_), pd.Timestamp(e_)
+        tr = labeled.loc[labeled[TIME_COL] < s_ts]
+        va = labeled.loc[(labeled[TIME_COL] >= s_ts) & (labeled[TIME_COL] < e_ts)]
+        X_tr, y_tr = prepare_lgb_frame(tr, cols, cc), tr[LABEL_COL].astype(int)
+        X_va, y_va = prepare_lgb_frame(va, cols, cc), va[LABEL_COL].astype(int)
+        yv = y_va.values
+        ents = {e: va[e].values for e in ("customer_id", "device_id")}
+        acc = {(m, w): [] for m in MINUTES for w in WEIGHTS}
+        ctrl = {w: [] for w in WEIGHTS}
+        base = []
+        for seed in (0, 1, 2):
+            prm = dict(objective="binary", metric="None", verbosity=-1, learning_rate=0.02,
+                       num_leaves=127, feature_fraction=0.85, bagging_fraction=0.85,
+                       bagging_freq=1, min_data_in_leaf=50, seed=seed, bagging_seed=seed,
+                       feature_fraction_seed=seed)
+            ds_tr = lgb.Dataset(X_tr, label=y_tr, categorical_feature=cc, free_raw_data=False)
+            ds_va = lgb.Dataset(X_va, label=y_va, categorical_feature=cc, reference=ds_tr, free_raw_data=False)
+            bst = lgb.train(prm, ds_tr, num_boost_round=4000, valid_sets=[ds_va],
+                            feval=make_pr_auc_feval(y_va.values, seed=seed),
+                            callbacks=[lgb.early_stopping(200, verbose=False),
+                                       lgb.log_evaluation(period=0)])
+            p = bst.predict(X_va, num_iteration=bst.best_iteration)
+            base.append(average_precision_score(yv, p))
+            for m in MINUTES:
+                for w in WEIGHTS:
+                    acc[(m, w)].append(average_precision_score(
+                        yv, sliding_loo_blend(p, ents, va[TIME_COL], w=w, window_minutes=m)))
+            for w in WEIGHTS:
+                ctrl[w].append(average_precision_score(
+                    yv, blocked_loo_blend(p, ents, va[TIME_COL], w=w, block_hours=1)))
+        res[wname] = {"base": float(np.mean(base)),
+                      **{k: float(np.mean(v)) for k, v in acc.items()},
+                      **{("fixed1h", w): float(np.mean(v)) for w, v in ctrl.items()}}
+        print(f"\n  {wname}: base {np.mean(base):.4f} [{time.time()-t0:.0f}s]", flush=True)
+        del X_tr, X_va
         gc.collect()
 
-    print(f"\ndone ({time.time()-t0:.0f}s)")
-    print("Read pass 2 first: a feature with a large POSITIVE delta is signal the")
-    print("new regime still carries. If every delta is negative, July fraud is not")
-    print("visible in this feature basis at all and more tuning cannot help.")
+    print("\n===== SLIDING window: mean LONG delta by +/-window and weight =====")
+    print(f"{'window':>9}" + "".join(f"{('w='+str(w)):>11}" for w in WEIGHTS))
+    best = None
+    for m in MINUTES:
+        row = f"{m:>8}m"
+        for w in WEIGHTS:
+            d = np.mean([res[wn][(m, w)] - res[wn]["base"] for wn in WINDOWS])
+            row += f"{d:>+11.4f}"
+            if best is None or d > best[0]:
+                best = (d, m, w)
+        print(row)
+    row = f"{'fixed1h':>9}"
+    for w in WEIGHTS:
+        row += f"{np.mean([res[wn][('fixed1h', w)] - res[wn]['base'] for wn in WINDOWS]):>+11.4f}"
+    print(row + "   <- control")
+    d, m, w = best
+    print(f"\nbest sliding: +/-{m}min w={w} -> {d:+.4f}")
+    print("Adopt only if the ordering is monotone across weight columns.")
 
 
 if __name__ == "__main__":

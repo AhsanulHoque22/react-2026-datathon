@@ -46,3 +46,34 @@ def demo():
 
 if __name__ == "__main__":
     demo()
+
+
+def demo_sliding():
+    from src.model import sliding_loo_blend
+    ts = pd.to_datetime(["2026-01-01 10:00", "2026-01-01 10:20", "2026-01-01 11:30",
+                         "2026-01-01 10:10"])
+    cid = ["c1", "c1", "c1", "c2"]
+    p = np.array([0.1, 0.5, 0.9, 0.4])
+    # +/-30min window => half-width 15min. Rows 0 and 1 are 20min apart, so
+    # NEITHER sees the other; everything is a singleton.
+    out = sliding_loo_blend(p, {"c": cid}, ts, w=0.5, window_minutes=30)
+    assert np.allclose(out, p), out
+    # +/-60min => half 30min: rows 0,1 see each other; row 2 is 70min from row 1
+    out = sliding_loo_blend(p, {"c": cid}, ts, w=0.5, window_minutes=60)
+    assert np.isclose(out[0], 0.5 * 0.1 + 0.5 * 0.5), out[0]
+    assert np.isclose(out[1], 0.5 * 0.5 + 0.5 * 0.1), out[1]
+    assert np.isclose(out[2], 0.9), "row 2 is outside the window of both"
+    assert np.isclose(out[3], 0.4), "c2 must never pool with c1"
+    # w=0 identity, and a huge window pools the whole entity
+    assert np.allclose(sliding_loo_blend(p, {"c": cid}, ts, w=0.0, window_minutes=60), p)
+    big = sliding_loo_blend(p, {"c": cid}, ts, w=0.5, window_minutes=10000)
+    assert np.isclose(big[0], 0.5 * 0.1 + 0.5 * ((0.5 + 0.9) / 2)), big[0]
+    # order independence: shuffling rows must not change each row's result
+    idx = np.array([2, 0, 3, 1])
+    sh = sliding_loo_blend(p[idx], {"c": [cid[i] for i in idx]}, ts[idx], w=0.5, window_minutes=60)
+    assert np.allclose(sh, out[idx]), "result depends on input row order"
+    print("sliding_loo_blend: all checks pass")
+
+
+if __name__ == "__main__":
+    demo_sliding()
