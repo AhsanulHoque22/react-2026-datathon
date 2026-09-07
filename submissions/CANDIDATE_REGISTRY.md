@@ -4,7 +4,8 @@ This file tracks all generated candidate submission files, their validation scor
 
 | Candidate File | Local Tail PR-AUC | Git Tag / Commit | MD5 Checksum | Status |
 |---|---|---|---|---|
-| `CANDIDATE_tri_architecture_0.5295.csv` | **0.5295 – 0.5298** | tag: `candidate-0.5295` (`1d5ed42`) | `db4759abbdcbe76e609e49a3b9cfe88a` | **All-Time Local High** (Tree-Neural Tri-Architecture) |
+| `CANDIDATE_tree_resnet_0.5298.csv` | **0.5298** | tag: `candidate-0.5298` | `3ebf260e0bcf5e337b1ae00dca3bfc6a` | **All-Time Local Record** (88% LGBM Champ + 12% Tabular ResNet) |
+| `CANDIDATE_tri_architecture_0.5295.csv` | 0.5295 | tag: `candidate-0.5295` (`1d5ed42`) | `db4759abbdcbe76e609e49a3b9cfe88a` | Tri-Architecture Simplex Blend |
 | `CANDIDATE_bagged_resnet_tri_0.5292.csv` | 0.5292 | commit `d28cc6d` | `953d4dcaaa5799f528e1109f7c865934` | 3-Seed Bagged ResNet + Champion GBDT |
 | `CANDIDATE_tuned_horizon_0.5288.csv` | **0.5288** | branch: `candidate/tuned-horizon-0.5288` (`0db895e`) | `6d87e95b5dab95654c19b95fec97fa54` | **Morning Submit Champion** (Pure GBDT 48/52 Horizon Blend) |
 | `CANDIDATE_multimodel_multihorizon_0.5282.csv` | 0.5282 | tag: `candidate-0.5282` (`59f5443`) | `9ee7c0095d28c796059717e2e48ffc06` | Archived (Un-tuned 90d Blend) |
