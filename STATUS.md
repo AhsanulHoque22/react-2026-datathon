@@ -55,7 +55,7 @@ intent still reaches it. It moves **4.7% of test rows**.
 |---|---|---|
 | `CANDIDATE_final_v5_0.5322.csv` (LB 0.56492) | submitted | prior-only features + propagation post-process -- **arguable** |
 | sanzid champion (LB 0.56548, rank 1) | submitted | same shape -- **arguable** |
-| **`CANDIDATE_v8c_compliant_0.5263.csv`** | not submitted | **best fully compliant** -- arm C + 90-day specialist blend |
+| **`CANDIDATE_v8c_compliant_0.5263.csv`** | **submitted -- LB 0.55262** | **best fully compliant** -- arm C + 90-day specialist blend |
 | `CANDIDATE_C_nograph_0.5252.csv` | not submitted | fully compliant, simpler |
 | `CANDIDATE_v7_forward_0.5380.csv` | **never submit** | forward-reading FEATURES -- indefensible |
 
@@ -557,3 +557,26 @@ selections rather than two versions of the same bet.
 
 Compliant best 0.5263 against v5's non-compliant 0.5322. **The cost of full
 compliance is about 0.006 local, roughly 0.012 on the leaderboard.**
+
+## The compliance cost, now measured on the leaderboard
+
+| submission | local tail | public LB | compliance |
+|---|---|---|---|
+| sanzid champion | -- | **0.56548** | arguable (propagation) |
+| our v5 | 0.5322 | 0.56492 | arguable (propagation) |
+| **v8c** | 0.5263 | **0.55262** | **fully compliant** |
+| BEST_0.53948 | 0.5204 | 0.53948 | fully compliant |
+
+**Full compliance costs 0.01286 on the public leaderboard** (0.56548 -> 0.55262).
+That is no longer an estimate.
+
+Third calibration point, and it corrects the amplification factor:
+
+| local delta | LB delta | ratio |
+|---|---|---|
+| 0.5204 -> 0.5322 (+0.0118) | 0.53948 -> 0.56492 (+0.0254) | 2.15x |
+| 0.5204 -> 0.5263 (+0.0059) | 0.53948 -> 0.55262 (+0.0131) | **2.22x** |
+
+The two independent estimates agree closely, so ~2.2x amplification is a real
+property of this task rather than a coincidence of one measurement. Predicted
+~0.554 for v8c, actual 0.55262 -- the closest projection made all competition.
