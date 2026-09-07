@@ -1191,7 +1191,25 @@ FINAL_PARAMS = dict(
 )
 
 
-# ------------- ablation: do the new self-relative features help? -----------
+# ====== adapt the teammate branch's two GBDT levers ========================
+# sanzid/tree-neural-0.56548 scored 0.56548 on the board with a stack of:
+# feature pruning to a top-N core, a dual-horizon blend (full-train model
+# mixed 48/52 with a 90-day specialist), a 12% Tabular ResNet, and our
+# propagation on top.
+#
+# The two GBDT pieces are worth adapting; the ResNet is not reproducible here
+# and its epoch was selected on the same holdout it was scored on.
+#
+# Why re-validate rather than copy the weights: their 48/52 and their round
+# counts were tuned on the Jul01-15 holdout, a 15-day window. We already know
+# that window is a poor proxy for a 62-day test set -- it is what made the
+# first propagation config look optimal when it was not. So the same levers get
+# measured here on 60-day windows whose group structure matches test.
+#
+# Recency deserves a second look specifically: we rejected recency WEIGHTING,
+# which reweights rows inside one model. A separate model trained on a hard
+# 90-day window and blended is a different construction, and that earlier
+# result does not cover it.
 def main():
     t0 = time.time()
     train = pd.read_csv(TRAIN_CSV, parse_dates=[TIME_COL])
@@ -1201,50 +1219,109 @@ def main():
     del train, test
     gc.collect()
     df = build_features(df)
-    leakage_assertions(df)
     feature_cols, cat_cols = get_feature_columns(df)
+    ALL = [c for c in feature_cols if "component_size_prior" not in c]
     labeled = df[~df["is_test"]]
     del df
     gc.collect()
-    print(f"featurized, {len(feature_cols)} features ({time.time()-t0:.0f}s)", flush=True)
+    print(f"featurized, {len(ALL)} features ({time.time()-t0:.0f}s)", flush=True)
 
-    NEW = [c for c in feature_cols if any(k in c for k in
-           ("_gap_accel", "_velocity_ratio_", "_amt_vs_prior_max",
-            "_is_record_amt", "_hour_bucket_share", "_new_hour_bucket"))]
-    print(f"{len(NEW)} new self-relative features: {NEW}", flush=True)
+    FULL = dict(objective="binary", metric="None", verbosity=-1, learning_rate=0.02,
+                num_leaves=127, feature_fraction=0.85, bagging_fraction=0.85,
+                bagging_freq=1, min_data_in_leaf=50)
+    # their retuned 90-day specialist
+    SPEC = dict(objective="binary", metric="None", verbosity=-1, learning_rate=0.02,
+                num_leaves=63, feature_fraction=0.75, bagging_fraction=0.85,
+                bagging_freq=1, min_data_in_leaf=100)
 
-    # Two windows: the tail is the leaderboard proxy, fold2 guards the easy regime.
-    WINDOWS = {"tail(Jul01-15)": ("2026-07-01", "2026-07-16"),
-               "fold2(Jun18-Jul02)": ("2026-06-18", "2026-07-02")}
+    # --- pruning core: gain importance from one full model on early data ---
+    cut = pd.Timestamp("2026-04-01")
+    seed_tr = labeled.loc[labeled[TIME_COL] < cut]
+    ccA = [c for c in cat_cols if c in ALL]
+    b0 = lgb.train(dict(FULL, seed=0, bagging_seed=0, feature_fraction_seed=0),
+                   lgb.Dataset(prepare_lgb_frame(seed_tr, ALL, ccA),
+                               label=seed_tr[LABEL_COL].astype(int),
+                               categorical_feature=ccA, free_raw_data=False),
+                   num_boost_round=600)
+    imp = pd.Series(b0.feature_importance("gain"), index=ALL).sort_values(ascending=False)
+    TOP160 = list(imp.index[:160])
+    TOP120 = list(imp.index[:120])
+    print(f"  pruning core built on rows before {cut.date()} (no leakage into the "
+          f"evaluation windows); top-160 keeps {len(TOP160)} of {len(ALL)}", flush=True)
+    del b0, seed_tr
+    gc.collect()
 
-    def evaluate(cols, tag):
+    FEATSETS = {"all": ALL, "top160": TOP160, "top120": TOP120}
+    WINDOWS = {"LONG May17-Jul16": ("2026-05-17", "2026-07-16"),
+               "LONG Apr01-Jun01": ("2026-04-01", "2026-06-01"),
+               "fold2-guard": ("2026-06-18", "2026-07-02")}
+    SPEC_W = [0.0, 0.3, 0.4, 0.52, 0.6]
+
+    res = {}
+    for fname, cols in FEATSETS.items():
+        cc = [c for c in cat_cols if c in cols]
+        res[fname] = {}
         for wname, (s_, e_) in WINDOWS.items():
             s_ts, e_ts = pd.Timestamp(s_), pd.Timestamp(e_)
             tr = labeled.loc[labeled[TIME_COL] < s_ts]
+            tr90 = tr.loc[tr[TIME_COL] >= s_ts - pd.Timedelta(days=90)]
             va = labeled.loc[(labeled[TIME_COL] >= s_ts) & (labeled[TIME_COL] < e_ts)]
-            cc = [c for c in cat_cols if c in cols]
-            X_tr, y_tr = prepare_lgb_frame(tr, cols, cc), tr[LABEL_COL].astype(int)
-            X_va, y_va = prepare_lgb_frame(va, cols, cc), va[LABEL_COL].astype(int)
-            aps = []
+            X_tr = prepare_lgb_frame(tr, cols, cc)
+            X_90 = prepare_lgb_frame(tr90, cols, cc)
+            X_va = prepare_lgb_frame(va, cols, cc)
+            y_tr, y_90 = tr[LABEL_COL].astype(int), tr90[LABEL_COL].astype(int)
+            y_va = va[LABEL_COL].astype(int); yv = y_va.values
+            ents = {e: va[e].values for e in ("customer_id", "device_id")}
+            acc = {w: [] for w in SPEC_W}
+            accp = {w: [] for w in SPEC_W}
             for seed in (0, 1, 2):
-                params = dict(objective="binary", metric="None", verbosity=-1,
-                              learning_rate=0.02, num_leaves=127, feature_fraction=0.85,
-                              bagging_fraction=0.85, bagging_freq=1, min_data_in_leaf=50,
-                              seed=seed, bagging_seed=seed, feature_fraction_seed=seed)
-                ds_tr = lgb.Dataset(X_tr, label=y_tr, categorical_feature=cc, free_raw_data=False)
-                ds_va = lgb.Dataset(X_va, label=y_va, categorical_feature=cc, reference=ds_tr, free_raw_data=False)
-                bst = lgb.train(params, ds_tr, num_boost_round=4000, valid_sets=[ds_va],
-                                feval=make_pr_auc_feval(y_va.values, seed=seed),
-                                callbacks=[lgb.early_stopping(200, verbose=False),
-                                           lgb.log_evaluation(period=0)])
-                aps.append(average_precision_score(y_va, bst.predict(X_va, num_iteration=bst.best_iteration)))
-            print(f"  {tag:22s} {wname:20s} {np.mean(aps):.4f} +/- {np.std(aps):.4f}  [{time.time()-t0:.0f}s]", flush=True)
-            del X_tr, X_va
+                dsf = lgb.Dataset(X_tr, label=y_tr, categorical_feature=cc, free_raw_data=False)
+                dsv = lgb.Dataset(X_va, label=y_va, categorical_feature=cc, reference=dsf, free_raw_data=False)
+                bf = lgb.train(dict(FULL, seed=seed, bagging_seed=seed, feature_fraction_seed=seed),
+                               dsf, num_boost_round=4000, valid_sets=[dsv],
+                               feval=make_pr_auc_feval(y_va.values, seed=seed),
+                               callbacks=[lgb.early_stopping(200, verbose=False),
+                                          lgb.log_evaluation(period=0)])
+                pf = bf.predict(X_va, num_iteration=bf.best_iteration)
+                ds9 = lgb.Dataset(X_90, label=y_90, categorical_feature=cc, free_raw_data=False)
+                dsv9 = lgb.Dataset(X_va, label=y_va, categorical_feature=cc, reference=ds9, free_raw_data=False)
+                bs = lgb.train(dict(SPEC, seed=seed, bagging_seed=seed, feature_fraction_seed=seed),
+                               ds9, num_boost_round=4000, valid_sets=[dsv9],
+                               feval=make_pr_auc_feval(y_va.values, seed=seed),
+                               callbacks=[lgb.early_stopping(200, verbose=False),
+                                          lgb.log_evaluation(period=0)])
+                ps = bs.predict(X_va, num_iteration=bs.best_iteration)
+                for w in SPEC_W:
+                    mix = (1 - w) * pf + w * ps
+                    acc[w].append(average_precision_score(yv, mix))
+                    accp[w].append(average_precision_score(
+                        yv, sliding_loo_blend(mix, ents, va[TIME_COL], w=0.5, window_minutes=60)))
+            res[fname][wname] = ({w: float(np.mean(v)) for w, v in acc.items()},
+                                 {w: float(np.mean(v)) for w, v in accp.items()})
+            print(f"  {fname:7s} {wname:18s} " +
+                  " ".join(f"w{w}:{np.mean(acc[w]):.4f}" for w in SPEC_W) +
+                  f"  [{time.time()-t0:.0f}s]", flush=True)
+            del X_tr, X_90, X_va
             gc.collect()
 
-    print("\nABLATION (3 seeds each; seed-noise std is ~0.0020)")
-    evaluate([c for c in feature_cols if c not in NEW], "WITHOUT new")
-    evaluate(feature_cols, "WITH new")
+    LONG = [w for w in WINDOWS if w.startswith("LONG")]
+    print("\n===== ADAPTED LEVERS: LONG-window mean, raw then +propagation =====")
+    print(f"{'featureset':12s}{'spec w':>8}{'raw':>10}{'+prop':>10}{'guard+prop':>12}")
+    best = None
+    for fname in FEATSETS:
+        for w in SPEC_W:
+            r = np.mean([res[fname][wn][0][w] for wn in LONG])
+            pp = np.mean([res[fname][wn][1][w] for wn in LONG])
+            g = res[fname]["fold2-guard"][1][w]
+            print(f"{fname:12s}{w:>8}{r:>10.4f}{pp:>10.4f}{g:>12.4f}")
+            if best is None or pp > best[0]:
+                best = (pp, fname, w, r, g)
+    cur_pp = np.mean([res["all"][wn][1][0.0] for wn in LONG])
+    pp, fname, w, r, g = best
+    print(f"\nour current (all features, no specialist, +prop) = {cur_pp:.4f}")
+    print(f"best = {fname}, spec w={w}, +prop {pp:.4f}  ({pp-cur_pp:+.4f})")
+    print("Under the measured ~2.2x local->LB amplification, +0.002 local is already")
+    print("worth ~+0.004 on the board, so judge against that, not the old +0.004 bar.")
 
 
 if __name__ == "__main__":

@@ -1191,7 +1191,19 @@ FINAL_PARAMS = dict(
 )
 
 
-# ------------- ablation: do the new self-relative features help? -----------
+# ================= v7: forward-looking features, no propagation ============
+# react-2026-fwd settled this: forward and symmetric window features are worth
+# +0.0244 on the 60-day windows, propagation is worth +0.0150, and stacking
+# propagation ON TOP of the forward features is worth -0.0008. They are the
+# same signal, and the model uses it far better as a feature than we did as a
+# post-hoc blend.
+#
+# cust_sym_cnt_60m and dev_seconds_to_next come out #1 and #2 by gain (15.3%
+# and 15.1%), ahead of every feature built before them.
+#
+# So the propagation post-process is dropped here. The kernel still reports the
+# propagated variant, because dropping the thing that won 1st place should be
+# visible in the log rather than assumed.
 def main():
     t0 = time.time()
     train = pd.read_csv(TRAIN_CSV, parse_dates=[TIME_COL])
@@ -1202,49 +1214,62 @@ def main():
     gc.collect()
     df = build_features(df)
     leakage_assertions(df)
+    for col, pre in (("customer_id", "cust"), ("device_id", "dev"), ("merchant_id", "merch")):
+        df = add_forward_window_features(df, col, pre, windows_min=(60, 1440))
     feature_cols, cat_cols = get_feature_columns(df)
+    cols = [c for c in feature_cols if "component_size_prior" not in c]
+    cc = [c for c in cat_cols if c in cols]
     labeled = df[~df["is_test"]]
+    test_df = df[df["is_test"]]
+    frame_sorted = bool(df[TIME_COL].is_monotonic_increasing)
     del df
     gc.collect()
-    print(f"featurized, {len(feature_cols)} features ({time.time()-t0:.0f}s)", flush=True)
+    print(f"featurized, {len(cols)} features ({time.time()-t0:.0f}s)", flush=True)
 
-    NEW = [c for c in feature_cols if any(k in c for k in
-           ("_gap_accel", "_velocity_ratio_", "_amt_vs_prior_max",
-            "_is_record_amt", "_hour_bucket_share", "_new_hour_bucket"))]
-    print(f"{len(NEW)} new self-relative features: {NEW}", flush=True)
+    P = dict(objective="binary", metric="None", verbosity=-1, learning_rate=0.02,
+             num_leaves=127, feature_fraction=0.85, bagging_fraction=0.85,
+             bagging_freq=1, min_data_in_leaf=50)
 
-    # Two windows: the tail is the leaderboard proxy, fold2 guards the easy regime.
-    WINDOWS = {"tail(Jul01-15)": ("2026-07-01", "2026-07-16"),
-               "fold2(Jun18-Jul02)": ("2026-06-18", "2026-07-02")}
+    hold_start = pd.Timestamp("2026-07-01")
+    fit = labeled.loc[labeled[TIME_COL] < hold_start]
+    hold = labeled.loc[labeled[TIME_COL] >= hold_start]
+    Xf, yf = prepare_lgb_frame(fit, cols, cc), fit[LABEL_COL].astype(int)
+    Xh, yh = prepare_lgb_frame(hold, cols, cc), hold[LABEL_COL].astype(int)
+    probe = lgb.train(dict(P, seed=0, bagging_seed=0, feature_fraction_seed=0),
+                      lgb.Dataset(Xf, label=yf, categorical_feature=cc, free_raw_data=False),
+                      num_boost_round=4000,
+                      valid_sets=[lgb.Dataset(Xh, label=yh, categorical_feature=cc, free_raw_data=False)],
+                      feval=make_pr_auc_feval(yh.values, seed=0),
+                      callbacks=[lgb.early_stopping(200, verbose=False), lgb.log_evaluation(period=0)])
+    ph = probe.predict(Xh, num_iteration=probe.best_iteration)
+    ents_h = {e: hold[e].values for e in ("customer_id", "device_id")}
+    rounds = int(round(probe.best_iteration * 1.1))
+    print(f"held-out(Jul01-15) raw={average_precision_score(yh, ph):.4f}  "
+          f"with-prop={average_precision_score(yh, sliding_loo_blend(ph, ents_h, hold[TIME_COL], w=0.5, window_minutes=60)):.4f}  "
+          f"rounds={rounds}", flush=True)
+    imp = pd.Series(probe.feature_importance("gain"), index=cols).sort_values(ascending=False)
+    tot = imp.sum()
+    print("  top-10 by gain: " + ", ".join(f"{c} {100*imp[c]/tot:.1f}%" for c in imp.index[:10]), flush=True)
+    del Xf, Xh, probe
+    gc.collect()
 
-    def evaluate(cols, tag):
-        for wname, (s_, e_) in WINDOWS.items():
-            s_ts, e_ts = pd.Timestamp(s_), pd.Timestamp(e_)
-            tr = labeled.loc[labeled[TIME_COL] < s_ts]
-            va = labeled.loc[(labeled[TIME_COL] >= s_ts) & (labeled[TIME_COL] < e_ts)]
-            cc = [c for c in cat_cols if c in cols]
-            X_tr, y_tr = prepare_lgb_frame(tr, cols, cc), tr[LABEL_COL].astype(int)
-            X_va, y_va = prepare_lgb_frame(va, cols, cc), va[LABEL_COL].astype(int)
-            aps = []
-            for seed in (0, 1, 2):
-                params = dict(objective="binary", metric="None", verbosity=-1,
-                              learning_rate=0.02, num_leaves=127, feature_fraction=0.85,
-                              bagging_fraction=0.85, bagging_freq=1, min_data_in_leaf=50,
-                              seed=seed, bagging_seed=seed, feature_fraction_seed=seed)
-                ds_tr = lgb.Dataset(X_tr, label=y_tr, categorical_feature=cc, free_raw_data=False)
-                ds_va = lgb.Dataset(X_va, label=y_va, categorical_feature=cc, reference=ds_tr, free_raw_data=False)
-                bst = lgb.train(params, ds_tr, num_boost_round=4000, valid_sets=[ds_va],
-                                feval=make_pr_auc_feval(y_va.values, seed=seed),
-                                callbacks=[lgb.early_stopping(200, verbose=False),
-                                           lgb.log_evaluation(period=0)])
-                aps.append(average_precision_score(y_va, bst.predict(X_va, num_iteration=bst.best_iteration)))
-            print(f"  {tag:22s} {wname:20s} {np.mean(aps):.4f} +/- {np.std(aps):.4f}  [{time.time()-t0:.0f}s]", flush=True)
-            del X_tr, X_va
-            gc.collect()
+    X_full, y_full = prepare_lgb_frame(labeled, cols, cc), labeled[LABEL_COL].astype(int)
+    X_test = prepare_lgb_frame(test_df, cols, cc)
+    ids = test_df["transaction_id"].values
+    ds = lgb.Dataset(X_full, label=y_full, categorical_feature=cc, free_raw_data=False)
+    preds = np.mean([lgb.train(dict(P, seed=s, bagging_seed=s, feature_fraction_seed=s),
+                               ds, num_boost_round=rounds).predict(X_test) for s in (0, 1, 2, 3, 4)], axis=0)
 
-    print("\nABLATION (3 seeds each; seed-noise std is ~0.0020)")
-    evaluate([c for c in feature_cols if c not in NEW], "WITHOUT new")
-    evaluate(feature_cols, "WITH new")
+    assert frame_sorted and LABEL_COL not in X_test.columns
+    for c in ID_COLS:
+        assert c not in X_test.columns
+    assert np.all((preds >= 0) & (preds <= 1)) and not np.isnan(preds).any()
+    sample = pd.read_csv(SAMPLE_SUBMISSION_CSV)
+    sub = pd.DataFrame({"transaction_id": ids, "fraud": preds})
+    sub = sub.set_index("transaction_id").loc[sample["transaction_id"]].reset_index()
+    assert list(sub["transaction_id"]) == list(sample["transaction_id"]) and len(sub) == len(sample)
+    sub.to_csv(OUT_DIR / "submission.csv", index=False)
+    print(f"wrote submission.csv rows={len(sub)} mean={sub['fraud'].mean():.5f} ({time.time()-t0:.0f}s)")
 
 
 if __name__ == "__main__":

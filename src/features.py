@@ -654,3 +654,221 @@ def add_forward_window_features(df: pd.DataFrame, entity_col: str, prefix: str,
     z[o] = nxt
     new[f"{prefix}_seconds_to_next"] = z
     return pd.concat([df, pd.DataFrame(new, index=df.index)], axis=1)
+
+
+def add_forward_rich_features(df: pd.DataFrame, entity_col: str, prefix: str,
+                              windows_min=(15, 60, 360, 1440), ratios: bool = True) -> pd.DataFrame:
+    """Forward/backward/symmetric window counts and sums, plus the quantities
+    that only become expressible once you can look forward.
+
+    The plain forward features turned out to be the strongest signal in the
+    model (`cust_sym_cnt_60m` is #2 by gain), but only two horizons were ever
+    tried. This widens the ladder and adds two derived families:
+
+      accel_w         forward count / backward count -- is this entity
+                      speeding up right now, rather than merely busy
+      amt_vs_sym_w    this amount against the mean of its own surrounding
+                      window, the two-sided version of the prior-only ratios
+                      that dominate the old feature set
+
+    Uses no labels; safe on test rows for the same reason the rest is."""
+    t = (df[TIME_COL] - df[TIME_COL].min()).dt.total_seconds().to_numpy()
+    codes = pd.factorize(df[entity_col].astype(str))[0].astype("int64")
+    amt = df["amount_bdt"].to_numpy(dtype="float64")
+    n = len(df)
+
+    max_sec = max(windows_min) * 60.0
+    span = (t.max() - t.min()) + max_sec + 1.0
+    key = codes * span + t
+    o = np.argsort(key, kind="stable")
+    ks, amts = key[o], amt[o]
+    csum = np.concatenate([[0.0], np.cumsum(amts)])
+    idx = np.arange(n)
+    amt_sorted = amts
+
+    new = {}
+
+    def scatter(name, arr_sorted):
+        z = np.empty(n, dtype="float64")
+        z[o] = arr_sorted
+        new[name] = z
+
+    for w in windows_min:
+        sec = w * 60.0
+        hi = np.searchsorted(ks, ks + sec, side="right")
+        lo = np.searchsorted(ks, ks - sec, side="left")
+        fwd_n = (hi - idx - 1).astype("float64")
+        bwd_n = (idx - lo).astype("float64")
+        sym_n = fwd_n + bwd_n
+        fwd_a = csum[hi] - csum[idx + 1]
+        bwd_a = csum[idx] - csum[lo]
+        sym_a = fwd_a + bwd_a
+        scatter(f"{prefix}_fwd_cnt_{w}m", fwd_n)
+        scatter(f"{prefix}_sym_cnt_{w}m", sym_n)
+        scatter(f"{prefix}_fwd_amtsum_{w}m", fwd_a)
+        scatter(f"{prefix}_sym_amtsum_{w}m", sym_a)
+        if ratios:
+            # +1 on both sides so a quiet entity reads as 1.0 rather than 0/0
+            scatter(f"{prefix}_accel_{w}m", (fwd_n + 1.0) / (bwd_n + 1.0))
+            sym_mean = sym_a / np.maximum(sym_n, 1.0)
+            scatter(f"{prefix}_amt_vs_sym_{w}m", amt_sorted / (sym_mean + EPS))
+
+    # time to this entity's next and second-next transaction, and the
+    # forward/backward gap ratio
+    ts = t[o]
+    same1 = np.zeros(n, dtype=bool)
+    same1[:-1] = codes[o][:-1] == codes[o][1:]
+    nxt = np.full(n, np.nan)
+    nxt[:-1] = np.where(same1[:-1], ts[1:] - ts[:-1], np.nan)
+    scatter(f"{prefix}_seconds_to_next", nxt)
+    if n > 2:
+        same2 = np.zeros(n, dtype=bool)
+        same2[:-2] = codes[o][:-2] == codes[o][2:]
+        nxt2 = np.full(n, np.nan)
+        nxt2[:-2] = np.where(same2[:-2], ts[2:] - ts[:-2], np.nan)
+        scatter(f"{prefix}_seconds_to_next2", nxt2)
+    prev = np.full(n, np.nan)
+    prev[1:] = np.where(codes[o][1:] == codes[o][:-1], ts[1:] - ts[:-1], np.nan)
+    scatter(f"{prefix}_gap_fwd_vs_bwd", (nxt + 1.0) / (prev + 1.0))
+    return pd.concat([df, pd.DataFrame(new, index=df.index)], axis=1)
+
+
+def add_location_and_category_context_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Location velocity, category/location-relative amounts, coarse crosses,
+    and smurfing ratios.
+
+    Adapted from the teammate branch `experiment/push-to-0.5400`. Reviewed
+    line-by-line for the organiser's strictly-before-t rule before adoption:
+    the location rollings use `closed="left"` so the current row is excluded,
+    the category and location means are `cumsum - own value` over `cumcount`,
+    the crosses are the row's own attributes, and the smurf/burst ratios are
+    built from the existing trailing (prior-only) windows. Nothing reads a row
+    at or after t."""
+    loc_filled = df["location"].fillna("__unknown__")
+    sub_loc = pd.DataFrame({"location": loc_filled, TIME_COL: df[TIME_COL],
+                            "amount_bdt": df["amount_bdt"]})
+    grouped_loc = sub_loc.groupby("location")
+    for h in (1, 24):
+        roll = grouped_loc.rolling(f"{h}h", on=TIME_COL, closed="left")["amount_bdt"]
+        cnt = roll.count().reset_index(level=0, drop=True).sort_index()
+        s = roll.sum().reset_index(level=0, drop=True).sort_index()
+        df[f"loc_cnt_{h}h"] = np.nan_to_num(cnt.values, nan=0.0)
+        df[f"loc_amtsum_{h}h"] = np.nan_to_num(s.values, nan=0.0)
+
+    cat_filled = df["merchant_category"].fillna("__unknown__")
+    cat_grp = df.groupby(cat_filled)["amount_bdt"]
+    cat_prior_cnt = cat_grp.cumcount().astype("float64")
+    cat_prior_mean = (cat_grp.cumsum() - df["amount_bdt"]) / cat_prior_cnt.replace(0, np.nan)
+    df["amt_vs_cat_mean_prior"] = df["amount_bdt"] / (cat_prior_mean + EPS)
+
+    loc_grp = df.groupby(loc_filled)["amount_bdt"]
+    loc_prior_cnt = loc_grp.cumcount().astype("float64")
+    loc_prior_mean = (loc_grp.cumsum() - df["amount_bdt"]) / loc_prior_cnt.replace(0, np.nan)
+    df["loc_amt_ratio"] = df["amount_bdt"] / (loc_prior_mean + EPS)
+
+    for pre in ("cust", "dev"):
+        if f"{pre}_cnt_24h" in df.columns and f"{pre}_amtsum_24h" in df.columns:
+            mean24 = df[f"{pre}_amtsum_24h"] / (df[f"{pre}_cnt_24h"] + EPS)
+            df[f"{pre}_amt_vs_24h_mean"] = df["amount_bdt"] / (mean24 + EPS)
+            df[f"{pre}_burst_accel"] = (df[f"{pre}_cnt_1h"] * 24.0) / (df[f"{pre}_cnt_24h"] + 1.0)
+        if f"{pre}_cnt_1h" in df.columns and f"{pre}_amtsum_1h" in df.columns:
+            df[f"{pre}_smurf_ratio_1h"] = (df[f"{pre}_cnt_1h"] + 1.0) / (df[f"{pre}_amtsum_1h"] + 10.0)
+
+    df["pay_x_dev"] = df["payment_method"].astype(str) + "_" + df["device_type"].astype(str)
+    df["cat_x_loc"] = df["merchant_category"].astype(str) + "_" + df["location"].astype(str)
+    df["txn_x_pay"] = df["transaction_type"].astype(str) + "_" + df["payment_method"].astype(str)
+    rows_so_far = np.arange(len(df), dtype="float64")
+    for col in ("pay_x_dev", "cat_x_loc", "txn_x_pay"):
+        filled = df[col].fillna("__unknown__")
+        df[f"{col}_freq_share_prior"] = filled.groupby(filled).cumcount().astype("float64") / np.maximum(rows_so_far, 1.0)
+    return df.copy()
+
+
+# Columns produced by the forward-looking feature builders. The organiser's
+# rule is explicit: "Every engineered feature for a transaction at time t may
+# only use information strictly before t", and the accompanying example allows
+# test-period rows only when they "occurred earlier than the row being scored".
+# Forward and symmetric windows read rows at or after t, so nothing here may
+# reach a submitted model.
+FORWARD_MARKERS = ("_fwd_", "_sym_", "_seconds_to_next", "_accel_", "_amt_vs_sym_",
+                   "_gap_fwd_vs_bwd")
+
+
+def assert_strictly_past(feature_cols) -> None:
+    """Fail loudly if any forward-looking column reached the feature matrix."""
+    bad = [c for c in feature_cols if any(m in c for m in FORWARD_MARKERS)]
+    assert not bad, (
+        "forward-looking features in a submitted model violate the organiser's "
+        f"strictly-before-t rule: {bad[:12]}{'...' if len(bad) > 12 else ''}"
+    )
+
+
+def add_backward_rich_features(df: pd.DataFrame, entity_col: str, prefix: str,
+                               windows_min=(5, 15, 60, 180, 720, 1440)) -> pd.DataFrame:
+    """The strictly-past half of the forward family.
+
+    The forward experiment showed this shape of feature carries a lot of
+    signal, but its gain came from the FORWARD half, which the organiser's
+    strictly-before-t rule forbids. These are the backward analogues that were
+    never built:
+
+      bwd_cnt/amtsum on a uniform ladder   -- the existing trailing windows are
+                                              an uneven mix per entity
+      rate_ratio_a_b  short-window rate vs long-window rate -- acceleration
+                      using only the past
+      amt_vs_bwd_w    this amount against its own trailing window mean
+      seconds_since_last2 / last3, and the gap ratio between them -- is the
+                      entity's spacing tightening
+
+    Every window is [t-w, t): the row itself and everything after it is
+    excluded, so this passes assert_strictly_past()."""
+    t = (df[TIME_COL] - df[TIME_COL].min()).dt.total_seconds().to_numpy()
+    codes = pd.factorize(df[entity_col].astype(str))[0].astype("int64")
+    amt = df["amount_bdt"].to_numpy(dtype="float64")
+    n = len(df)
+
+    max_sec = max(windows_min) * 60.0
+    span = (t.max() - t.min()) + max_sec + 1.0
+    key = codes * span + t
+    o = np.argsort(key, kind="stable")
+    ks, amts = key[o], amt[o]
+    csum = np.concatenate([[0.0], np.cumsum(amts)])
+    idx = np.arange(n)
+    new = {}
+
+    def scatter(name, arr_sorted):
+        z = np.empty(n, dtype="float64")
+        z[o] = arr_sorted
+        new[name] = z
+
+    counts = {}
+    for w in windows_min:
+        lo = np.searchsorted(ks, ks - w * 60.0, side="left")
+        c = (idx - lo).astype("float64")            # strictly prior: excludes self
+        a = csum[idx] - csum[lo]
+        counts[w] = c
+        scatter(f"{prefix}_bwd_cnt_{w}m", c)
+        scatter(f"{prefix}_bwd_amtsum_{w}m", a)
+        scatter(f"{prefix}_amt_vs_bwd_{w}m", amts / (a / np.maximum(c, 1.0) + EPS))
+
+    # acceleration from the past only: short-window rate against long-window rate
+    for short, long_ in ((5, 60), (15, 180), (60, 1440)):
+        if short in counts and long_ in counts:
+            rate_s = counts[short] / float(short)
+            rate_l = counts[long_] / float(long_)
+            scatter(f"{prefix}_rate_ratio_{short}_{long_}", (rate_s + 1e-9) / (rate_l + 1e-9))
+
+    ts = t[o]
+    same1 = np.zeros(n, dtype=bool)
+    same1[1:] = codes[o][1:] == codes[o][:-1]
+    prev1 = np.full(n, np.nan)
+    prev1[1:] = np.where(same1[1:], ts[1:] - ts[:-1], np.nan)
+    scatter(f"{prefix}_seconds_since_last2_gap", prev1)
+    if n > 2:
+        same2 = np.zeros(n, dtype=bool)
+        same2[2:] = codes[o][2:] == codes[o][:-2]
+        prev2 = np.full(n, np.nan)
+        prev2[2:] = np.where(same2[2:], ts[2:] - ts[:-2], np.nan)
+        scatter(f"{prefix}_seconds_since_last2", prev2)
+        scatter(f"{prefix}_gap_tightening", (prev1 + 1.0) / (prev2 - prev1 + 1.0))
+    return pd.concat([df, pd.DataFrame(new, index=df.index)], axis=1)

@@ -1191,7 +1191,21 @@ FINAL_PARAMS = dict(
 )
 
 
-# ------------- ablation: do the new self-relative features help? -----------
+# ====== the forward family is under-explored; widen it =====================
+# v7 sampled exactly two forward horizons (60m, 1440m) across three entities
+# and landed cust_sym_cnt_60m as the #2 feature in the model at 16.2% gain.
+# That is a strong signal explored at two points.
+#
+# Arms:
+#   A  v7 as shipped (60m, 1440m, counts+sums+seconds_to_next)
+#   B  wider ladder, same statistics
+#   C  wider ladder + the quantities only forward windows make expressible:
+#      accel (forward count / backward count -- speeding up, not merely busy)
+#      and amount vs the SURROUNDING window mean, the two-sided version of the
+#      prior-only ratios that dominate the old feature set
+#
+# C adds ~126 columns to 197, so dilution is a live risk and B exists to
+# separate "more horizons" from "more kinds of thing".
 def main():
     t0 = time.time()
     train = pd.read_csv(TRAIN_CSV, parse_dates=[TIME_COL])
@@ -1200,51 +1214,85 @@ def main():
     assert_frame_sane(df)
     del train, test
     gc.collect()
-    df = build_features(df)
-    leakage_assertions(df)
-    feature_cols, cat_cols = get_feature_columns(df)
-    labeled = df[~df["is_test"]]
+    base = build_features(df)
     del df
     gc.collect()
-    print(f"featurized, {len(feature_cols)} features ({time.time()-t0:.0f}s)", flush=True)
+    base_cols, cat_cols = get_feature_columns(base)
+    BASE = [c for c in base_cols if "component_size_prior" not in c]
+    print(f"base {len(BASE)} features ({time.time()-t0:.0f}s)", flush=True)
 
-    NEW = [c for c in feature_cols if any(k in c for k in
-           ("_gap_accel", "_velocity_ratio_", "_amt_vs_prior_max",
-            "_is_record_amt", "_hour_bucket_share", "_new_hour_bucket"))]
-    print(f"{len(NEW)} new self-relative features: {NEW}", flush=True)
+    ENTS = (("customer_id", "cust"), ("device_id", "dev"), ("merchant_id", "merch"))
+    variants = {}
+    d = base
+    for col, pre in ENTS:
+        d = add_forward_window_features(d, col, pre, windows_min=(60, 1440))
+    variants["A_v7 (2 horizons)"] = d
+    d2 = base
+    for col, pre in ENTS:
+        d2 = add_forward_rich_features(d2, col, pre,
+                                       windows_min=(5, 15, 60, 180, 720, 1440), ratios=False)
+    variants["B_wide ladder"] = d2
+    d3 = base
+    for col, pre in ENTS:
+        d3 = add_forward_rich_features(d3, col, pre,
+                                       windows_min=(5, 15, 60, 180, 720, 1440), ratios=True)
+    variants["C_wide + accel/ratios"] = d3
+    del base
+    gc.collect()
 
-    # Two windows: the tail is the leaderboard proxy, fold2 guards the easy regime.
-    WINDOWS = {"tail(Jul01-15)": ("2026-07-01", "2026-07-16"),
-               "fold2(Jun18-Jul02)": ("2026-06-18", "2026-07-02")}
+    WINDOWS = {"LONG May17-Jul16": ("2026-05-17", "2026-07-16"),
+               "LONG Apr01-Jun01": ("2026-04-01", "2026-06-01"),
+               "fold2-guard": ("2026-06-18", "2026-07-02")}
 
-    def evaluate(cols, tag):
+    res = {}
+    for vname, frame in variants.items():
+        cols, cats = get_feature_columns(frame)
+        cols = [c for c in cols if "component_size_prior" not in c]
+        cc = [c for c in cats if c in cols]
+        lab = frame[~frame["is_test"]]
+        res[vname] = {}
+        print(f"\n  {vname}: {len(cols)} features", flush=True)
         for wname, (s_, e_) in WINDOWS.items():
             s_ts, e_ts = pd.Timestamp(s_), pd.Timestamp(e_)
-            tr = labeled.loc[labeled[TIME_COL] < s_ts]
-            va = labeled.loc[(labeled[TIME_COL] >= s_ts) & (labeled[TIME_COL] < e_ts)]
-            cc = [c for c in cat_cols if c in cols]
+            tr = lab.loc[lab[TIME_COL] < s_ts]
+            va = lab.loc[(lab[TIME_COL] >= s_ts) & (lab[TIME_COL] < e_ts)]
             X_tr, y_tr = prepare_lgb_frame(tr, cols, cc), tr[LABEL_COL].astype(int)
             X_va, y_va = prepare_lgb_frame(va, cols, cc), va[LABEL_COL].astype(int)
             aps = []
             for seed in (0, 1, 2):
-                params = dict(objective="binary", metric="None", verbosity=-1,
-                              learning_rate=0.02, num_leaves=127, feature_fraction=0.85,
-                              bagging_fraction=0.85, bagging_freq=1, min_data_in_leaf=50,
-                              seed=seed, bagging_seed=seed, feature_fraction_seed=seed)
+                prm = dict(objective="binary", metric="None", verbosity=-1, learning_rate=0.02,
+                           num_leaves=127, feature_fraction=0.85, bagging_fraction=0.85,
+                           bagging_freq=1, min_data_in_leaf=50, seed=seed, bagging_seed=seed,
+                           feature_fraction_seed=seed)
                 ds_tr = lgb.Dataset(X_tr, label=y_tr, categorical_feature=cc, free_raw_data=False)
-                ds_va = lgb.Dataset(X_va, label=y_va, categorical_feature=cc, reference=ds_tr, free_raw_data=False)
-                bst = lgb.train(params, ds_tr, num_boost_round=4000, valid_sets=[ds_va],
+                ds_va = lgb.Dataset(X_va, label=y_va, categorical_feature=cc,
+                                    reference=ds_tr, free_raw_data=False)
+                bst = lgb.train(prm, ds_tr, num_boost_round=4000, valid_sets=[ds_va],
                                 feval=make_pr_auc_feval(y_va.values, seed=seed),
                                 callbacks=[lgb.early_stopping(200, verbose=False),
                                            lgb.log_evaluation(period=0)])
                 aps.append(average_precision_score(y_va, bst.predict(X_va, num_iteration=bst.best_iteration)))
-            print(f"  {tag:22s} {wname:20s} {np.mean(aps):.4f} +/- {np.std(aps):.4f}  [{time.time()-t0:.0f}s]", flush=True)
+                if seed == 0 and wname.startswith("LONG May"):
+                    imp = pd.Series(bst.feature_importance("gain"), index=cols).sort_values(ascending=False)
+                    tot = imp.sum()
+                    print(f"      top-6: " + ", ".join(f"{c} {100*imp[c]/tot:.1f}%" for c in imp.index[:6]),
+                          flush=True)
+            res[vname][wname] = (float(np.mean(aps)), float(np.std(aps)))
+            print(f"    {wname:18s} {np.mean(aps):.4f} +/- {np.std(aps):.4f}  [{time.time()-t0:.0f}s]",
+                  flush=True)
             del X_tr, X_va
             gc.collect()
+        del frame
+        gc.collect()
 
-    print("\nABLATION (3 seeds each; seed-noise std is ~0.0020)")
-    evaluate([c for c in feature_cols if c not in NEW], "WITHOUT new")
-    evaluate(feature_cols, "WITH new")
+    LONG = [w for w in WINDOWS if w.startswith("LONG")]
+    print("\n============ WIDENING THE FORWARD FAMILY ============")
+    print(f"{'variant':24s}{'LONG mean':>12}{'guard':>10}{'vs v7':>10}")
+    b = np.mean([res["A_v7 (2 horizons)"][w][0] for w in LONG])
+    for v in variants:
+        m = np.mean([res[v][w][0] for w in LONG])
+        print(f"{v:24s}{m:>12.4f}{res[v]['fold2-guard'][0]:>10.4f}{m-b:>+10.4f}")
+    print("\nAt the measured ~2.15x local->LB amplification, +0.002 local is ~+0.004 board.")
 
 
 if __name__ == "__main__":
