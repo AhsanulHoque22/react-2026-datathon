@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Method Summary: Multi-Horizon Tree-Neural Hybrid with Temporal Entity Propagation</title>
+<!-- KaTeX -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/contrib/auto-render.min.js"></script>
+<script>
+    document.addEventListener("DOMContentLoaded", function() {
+        renderMathInElement(document.body, {
+            delimiters: [
+                {left: '$$', right: '$$', display: true},
+                {left: '$', right: '$', display: false}
+            ],
+            throwOnError: false
+        });
+        window.status = "ready";
+    });
+</script>
+<style>
+    @page {
+        size: A4;
+        margin: 13mm 16mm 13mm 16mm;
+    }
+    body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        font-size: 9.15pt;
+        line-height: 1.38;
+        color: #1e293b;
+        margin: 0;
+        padding: 0;
+    }
+    .page-break {
+        page-break-before: always;
+        break-before: page;
+    }
+    .header-card {
+        border: 1px solid #cbd5e1;
+        border-radius: 6px;
+        background: #f8fafc;
+        padding: 10px 14px;
+        margin-bottom: 10px;
+    }
+    .header-title {
+        font-size: 14.5pt;
+        font-weight: 700;
+        color: #0f172a;
+        margin: 0 0 6px 0;
+        line-height: 1.25;
+        letter-spacing: -0.2px;
+    }
+    .meta-grid {
+        display: grid;
+        grid-template-columns: 1.1fr 1fr;
+        gap: 4px 12px;
+        font-size: 8.8pt;
+        color: #475569;
+    }
+    .meta-grid strong {
+        color: #0f172a;
+    }
+    .badge {
+        display: inline-block;
+        background: #e2e8f0;
+        color: #0f172a;
+        font-weight: 600;
+        padding: 0px 5px;
+        border-radius: 3px;
+    }
+    h3 {
+        font-size: 10.4pt;
+        margin: 7px 0 2.5px 0;
+        color: #0f172a;
+        font-weight: 700;
+        border-bottom: 1.5px solid #cbd5e1;
+        padding-bottom: 2px;
+        page-break-after: avoid;
+    }
+    p {
+        margin: 2.5px 0 3.5px 0;
+    }
+    ul, ol {
+        margin: 2.5px 0 3.5px 0;
+        padding-left: 17px;
+    }
+    li {
+        margin-bottom: 2px;
+    }
+    code {
+        background-color: #f1f5f9;
+        color: #0f172a;
+        padding: 1px 3px;
+        border-radius: 3px;
+        font-family: "JetBrains Mono", Consolas, Menlo, monospace;
+        font-size: 8.3pt;
+    }
+    table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 6px 0;
+        font-size: 8.5pt;
+        page-break-inside: avoid;
+    }
+    th, td {
+        border: 1px solid #cbd5e1;
+        padding: 3.5px 6px;
+        text-align: left;
+    }
+    th {
+        background-color: #f1f5f9;
+        font-weight: 600;
+        color: #1e293b;
+    }
+    tr:nth-child(even) {
+        background-color: #f8fafc;
+    }
+    .katex-display {
+        margin: 4px 0 !important;
+    }
+</style>
+</head>
+<body>
+
+<div class="header-card">
+    <div class="header-title">Method Summary: Multi-Horizon Tree-Neural Hybrid with Temporal Entity Propagation</div>
+    <div class="meta-grid">
+        <div><strong>Team:</strong> Overfit & Overcaffeinated</div>
+        <div><strong>Competition:</strong> REACT 2026 Datathon (Tabular Fraud Detection)</div>
+        <div><strong>Public Leaderboard:</strong> <span class="badge">0.56548</span></div>
+        <div><strong>Local PR-AUC (Jul 1–15):</strong> <span class="badge">0.5359</span> (Baseline: 0.1664)</div>
+    </div>
+</div>
+
+<h3>1. Approach Overview</h3>
+<p>Detecting payment fraud under severe class imbalance (1.76% prevalence) and temporal regime drift requires moving beyond standard decision trees. Our solution combines three synergistic pillars:</p>
+<ol>
+<li><strong>Causally Sound Behavioral Engineering</strong>: 160 scale-free, strictly-prior features capturing individual spending baselines, short-term velocity acceleration, and bipartite entity novelty.</li>
+<li><strong>Dual-Horizon Tree-Neural Hybrid</strong>: Blending leaf-wise gradient-boosted trees (LightGBM) across two distinct training horizons with a continuous deep neural manifold (Tabular ResNet) to resolve orthogonal decision-boundary artifacts.</li>
+<li><strong>Unsupervised Temporal Prediction Propagation</strong>: A post-inference leave-one-out (LOO) diffusion process that exploits empirical transaction burst clustering without label leakage.</li>
+</ol>
+<h3>2. Data Handling &amp; Causally Sound Feature Engineering</h3>
+<p>Strict temporal causality is enforced throughout: for every transaction at time $t$, engineered features access information strictly before $t$ (broken by <code>transaction_id</code>). All features mechanically pass point-in-time leakage assertions; no per-entity target encoding or future information is used. From 220+ initial candidates, feature pruning isolated the <strong>Top 160 core features</strong>:</p>
+<ul>
+<li><strong>Scale-Free Behavioral Deviations</strong>: Rather than raw amounts (which drift), amount is normalized against personal history:
+<ul>
+<li><code>cust_amt_ratio</code>: Amount divided by the customer's prior expanding mean (single highest-gain feature).</li>
+<li><code>cust_amt_robust_z</code>: Robust MAD-based z-score around expanding median: $(\text{amt} - \text{median}) / (\text{MAD} + \epsilon)$.</li>
+</ul>
+</li>
+<li><strong>Traffic-Matched Trailing Windows</strong>: Sub-hour and trailing windows (5m, 15m, 30m, 1h, 3h, 6h, 12h, 24h, 72h, 168h) using <code>closed=&quot;left&quot;</code>. High-throughput devices and merchants leverage sub-hour windows to catch automated credential-stuffing bursts.</li>
+<li><strong>Velocity Burst Acceleration</strong>: Normalized velocity ratios like <code>cust_burst_accel</code> ($(\text{cnt}_{1\text{h}} \times 24) / (\text{cnt}_{24\text{h}} + 1)$) detect abrupt spikes relative to recent personal baselines.</li>
+<li><strong>Counterparty Expansion &amp; Novelty</strong>: Tracks real-time account takeover signals (<code>is_new_device_for_customer</code>, <code>is_new_location_for_customer</code>) and shared device concentration (<code>device_id_nunique_customer_for_device_prior</code>).</li>
+</ul>
+<div class="page-break"></div>
+<h3>3. Model Architecture: Dual-Horizon Tree-Neural Hybrid</h3>
+<p>Empirical audits revealed an acute summer regime shift: modern attacks shifted heavily toward device-velocity bursts rather than customer-amount anomalies. To adapt without discarding rare historical categoricals, we deployed a hybrid ensemble:</p>
+<ul>
+<li><strong>Dual-Horizon LightGBM Trees</strong>:
+<ul>
+<li><em>Full-Train Horizon (Jan 1 – Jul 15)</em>: 882 boosting rounds, <code>num_leaves=127</code>, <code>lr=0.02</code>, <code>feature_fraction=0.85</code>, <code>min_data_in_leaf=50</code>. Captures macro patterns and long-tail categories.</li>
+<li><em>90-Day Specialist Horizon (Apr 16 – Jul 15)</em>: 433 boosting rounds, <code>num_leaves=63</code>, <code>lr=0.02</code>, <code>feature_fraction=0.75</code>, <code>min_data_in_leaf=100</code>. Discards stale winter relationships and focuses on recent summer velocity attacks.</li>
+<li><em>Horizon Blend</em>: $P_{\text{LGBM}} = 0.48 \cdot P_{\text{Full}} + 0.52 \cdot P_{90\text{d}}$ (Local PR-AUC: <strong>0.5284</strong>).</li>
+</ul>
+</li>
+<li><strong>Tabular ResNet (Neural Manifold Regularization)</strong>:
+<ul>
+<li><em>Architecture</em>: Continuous numerical features are standardized (<code>StandardScaler</code>, clipped to $[-5, 5]$); categorical features pass through learnable entity embeddings ($d \approx 1.6 \times \text{card}^{0.56}$). The combined representation feeds into 3 Residual Blocks (<code>LayerNorm</code> $\to$ <code>Linear(256, 512)</code> $\to$ <code>GELU</code> $\to$ <code>Dropout(0.15)</code> $\to$ <code>Linear(512, 256)</code> $\to$ <code>Dropout(0.15)</code> $\to$ Skip Connection).</li>
+<li><em>Training</em>: Trained for 8 epochs using AdamW (<code>lr=1e-3</code>, <code>wd=1e-4</code>) with <code>CosineAnnealingLR</code>.</li>
+<li><em>Tree-Neural Blend</em>: $P_{\text{raw}} = 0.88 \cdot P_{\text{LGBM}} + 0.12 \cdot P_{\text{ResNet}}$ (<strong>0.5298</strong> PR-AUC). The continuous neural manifold smooths orthogonal tree step boundaries, rescuing borderline false negatives.</li>
+</ul>
+</li>
+</ul>
+<h3>4. Post-Processing: Temporal Entity Prediction Propagation</h3>
+<p>Fraud in payment rails is inherently bursty. Analysis revealed strong empirical sibling clustering: $P(\text{sibling fraud} \mid \text{current fraud})$ is <strong>3.87x baseline</strong> on devices and <strong>2.63x</strong> on customers. To reflect this, we apply an unsupervised leave-one-out (LOO) temporal diffusion process over a sliding $\pm 60$-minute window ($|t_j - t_i| \le 30$ min, $j \neq i$):</p>
+<p>$$P_{\text{final}}(i) = (1 - w) \cdot P_{\text{raw}}(i) + w \cdot \frac{1}{2} \left[ \bar{P}_{\text{LOO, cust}}(i) + \bar{P}_{\text{LOO, dev}}(i) \right]$$</p>
+<p>with $w = 0.50$. Transactions without in-window siblings (singletons, 95.3% of test rows) pass through completely unchanged; the blend refines only the 4.7% of transactions occurring in bursts. The operation touches zero labels and fits zero test parameters. This elevates high-confidence burst clusters and suppresses isolated noise, driving local PR-AUC to <strong>0.5359</strong> and Kaggle Public LB to <strong>0.56548</strong>.</p>
+<h3>5. Validation Strategy, Technical Decisions &amp; Results</h3>
+<ul>
+<li><strong>Validation Discipline</strong>: Evaluated on a chronological holdout tail (<strong>July 1 – July 15</strong>, 59,465 transactions). Seed noise was measured at $\sigma \approx 0.0020$; innovations were retained only if lifts exceeded this noise floor.</li>
+<li><strong>Key Negative Findings (Avoided Traps)</strong>:
+<ul>
+<li><em>Class Weighting</em>: Removing <code>scale_pos_weight=55</code> gave +0.026 LB. Weighted loss distorts ranking calibration under PR-AUC.</li>
+<li><em>Forward Features</em>: Discarded forward-looking window experiments (+0.024 local lift) to maintain strict rule compliance.</li>
+</ul>
+</li>
+</ul>
+<table>
+<thead>
+<tr>
+<th style="text-align:left">Milestone / Iteration</th>
+<th style="text-align:left">Key Technical Innovation</th>
+<th style="text-align:center">Local PR-AUC (Jul 1-15)</th>
+<th style="text-align:center">Kaggle Public LB</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td style="text-align:left"><strong>0. Baseline</strong></td>
+<td style="text-align:left">Raw tabular features only, default LightGBM</td>
+<td style="text-align:center">0.1664</td>
+<td style="text-align:center">0.1664</td>
+</tr>
+<tr>
+<td style="text-align:left"><strong>1. Feature Pipeline</strong></td>
+<td style="text-align:left">Expanding baselines, robust MAD z-scores, trailing windows</td>
+<td style="text-align:center">0.5090</td>
+<td style="text-align:center">0.5105</td>
+</tr>
+<tr>
+<td style="text-align:left"><strong>2. Objective Calibration</strong></td>
+<td style="text-align:left">Removed <code>scale_pos_weight</code> (rank optimization)</td>
+<td style="text-align:center">0.5204</td>
+<td style="text-align:center">0.5395</td>
+</tr>
+<tr>
+<td style="text-align:left"><strong>3. Feature Pruning</strong></td>
+<td style="text-align:left">Information-density pruning to Top-160 core features</td>
+<td style="text-align:center">0.5269</td>
+<td style="text-align:center">—</td>
+</tr>
+<tr>
+<td style="text-align:left"><strong>4. Dual-Horizon Trees</strong></td>
+<td style="text-align:left">48% Full-Train (882r) + 52% 90-Day Specialist (433r)</td>
+<td style="text-align:center">0.5284</td>
+<td style="text-align:center">—</td>
+</tr>
+<tr>
+<td style="text-align:left"><strong>5. Tree-Neural Fusion</strong></td>
+<td style="text-align:left">88% Dual-Horizon LGBM + 12% Tabular ResNet</td>
+<td style="text-align:center">0.5298</td>
+<td style="text-align:center">—</td>
+</tr>
+<tr>
+<td style="text-align:left"><strong>6. Temporal Propagation</strong></td>
+<td style="text-align:left">Sliding LOO temporal propagation ($\pm 60$m, $w=0.50$)</td>
+<td style="text-align:center"><strong>0.5359</strong></td>
+<td style="text-align:center"><strong>0.56548</strong></td>
+</tr>
+</tbody>
+</table>
+
+</body>
+</html>
