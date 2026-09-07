@@ -1,6 +1,6 @@
 # REACT 2026 Datathon — Team Status Dashboard
 
-Last updated: **2026-09-06 22:45 Dhaka** · deadline **2026-09-07 23:59:59 Dhaka** (~25.2h left)
+Last updated: **2026-09-07 10:50 Dhaka** · deadline **2026-09-07 23:59:59 Dhaka** (~13h left)
 
 > Modeling plan and rationale: [`PLAN.md`](./PLAN.md) · Onboarding tasks: [`TEAM_TASKS.md`](./TEAM_TASKS.md)
 
@@ -371,76 +371,69 @@ instability.
 One of four paid, and it only survived because `prop3` caught that the
 validation regime did not match the test window.
 
-## In flight
+## Sep 7 morning — what worked and what did not
 
-**Nothing.** All kernels complete.
+**Propagation is the only thing that paid, and it paid three times over.**
 
+Blend each score with a leave-one-out mean of the same entity's other scores
+nearby in time. Fraud clusters by entity (P(sibling fraud | fraud) is 3.87x
+base for devices, 2.63x for customers) and a per-row model cannot express it.
+Uses only model outputs, entity ids and timestamps -- no labels -- so nothing
+is fitted to test.csv.
 
-Kaggle kernels are generated from `src/` by `scripts/build_kaggle_kernel.py`,
-so they can't drift from local source. Gotcha recorded: the API mounts
-competition data at `/kaggle/input/competitions/<slug>/`, not
-`/kaggle/input/<slug>/`.
+Searched to a bracketed optimum: **sliding +/-60min, w=0.50, customer+device
+-> +0.0150** on 60-day windows whose group structure matches the test set.
+All three windows improve, fold2 guard included (+0.0149), std 0.0002-0.0004.
 
-### Target encoding — measured, and the answer is no (`react-2026-te`)
+| step | config | gain |
+|---|---|---|
+| first attempt | customer, 7-day block, w=0.05 | +0.0049 |
+| add device, tighter | cust+dev, 3-day, w=0.075 | +0.0073 |
+| tighter still | cust+dev, 24h, w=0.10 | +0.0091 |
+| to the floor | cust+dev, 1h, w=0.2 | +0.0134 |
+| sliding, bracketed | cust+dev, +/-60min, w=0.50 | **+0.0150** |
 
-| arm | Jun25-Jul02 | Jul02-Jul08 | Jul08-Jul16 | fold2-guard | recent mean |
-|---|---|---|---|---|---|
-| A — current best, no TE | 0.7701 | **0.4943** | 0.5484 | 0.7930 | 0.6043 |
-| B — + TE (rates, counts, positives) | 0.7771 | 0.4913 | 0.5531 | 0.7977 | 0.6072 (+0.0029) |
-| C — + TE rates only | 0.7763 | 0.4917 | 0.5539 | 0.7971 | 0.6073 (+0.0031) |
+Window is a true peak (+/-30 and +/-120 both lower); weight plateaus at
+0.5-0.6 and falls by 0.9. Sliding matched fixed blocks, so the boundary-effect
+worry was unfounded.
 
-**Fails the acceptance rule: +0.0031 against a +0.004 bar**, and it *loses*
-on Jul02-Jul08, the hardest and most test-like window. 2/3 windows up, worst
-delta -0.0026.
+### Rejected this morning
 
-The model does reach for these features -- `te_dev` and `te_merch` land 3rd/4th
-by gain, above almost every behavioural feature. But `te_cust` never enters the
-top 10, and the aggregate payoff still lands under the bar. High feature
-importance and a real score gain are not the same thing; the model happily
-spends splits on a feature that is not buying accuracy on the windows that
-count.
+| lever | result | why it failed |
+|---|---|---|
+| Target encoding | +0.0031 | below the +0.004 bar, loses the hardest window, and carries reproducibility-review exposure for less than propagation gives free |
+| Drift normalisation | +0.0001 | much of the flagged drift is deterministic accumulation; the percentile transform strips absolute level, which carries signal |
+| Ranking objectives | -0.009 | PR-AUC scores one GLOBAL ranking; lambdarank optimises NDCG *within group*, so day-grouping discarded the cross-day ordering |
+| Self-training (soft) | +0.0023 | real but small, and the only idea that trains on test rows |
+| Self-training (hard) | -0.0101 | pseudo-labels at AP 0.53 inject more noise than signal |
+| Drop dead-regime features | +0.0001 / -0.0010 | see below |
+| DART, L1/L2, max_bin, extra_trees, GOSS | -0.0039..+0.0006 | defaults were already right |
 
-**Recommendation: do not adopt.** It is worth less than prediction propagation
-(+0.0049), which carries no reproducibility-review exposure at all. Taking the
-smaller gain *and* the "targeting specific entity IDs" risk would be a bad
-trade in both directions. The PLAN.md ban stands, now backed by a measurement
-instead of caution.
+### Why the score will not climb further
 
-This also closes the theory that target encoding explained the gap to the
-leaders. It does not.
+The July diagnostic (`react-2026-what`) found the fraud signature changed
+**shape**: customer-relative features roughly halved in univariate AP
+(`cust_amt_robust_z` 0.41 -> 0.24) while device-volume features roughly
+doubled (`dev_amtsum_6h` 0.095 -> 0.172). Old fraud was a transaction unusual
+for its customer; new fraud is volume through a device, often across new
+customers.
 
-## Open decision — RESOLVED, see above
+The obvious prescription -- drop the dead features so the model finds the live
+ones -- **was tested and is wrong**. Dropping the customer-relative block costs
+-0.0010 on July and -0.0027 on the guard. The reason: 0.24 AP is *still* better
+than 0.172. The old signal decayed but remains the strongest thing in the
+feature set, and there is no stronger alternative hiding behind it.
 
-**Per-entity target encoding** (`te_customer`, `te_device`, `te_merchant`:
-smoothed, past-only historical fraud rates). The one documented higher-scoring
-approach we've seen had these as its 4th/6th/11th most important features, and
-it is the only signal our model structurally cannot reach — we withhold both
-raw IDs and any label-derived entity statistic.
+That is the ceiling, and it is a property of the data. Supporting evidence: 33
+teams have converged into 0.497-0.565, the serious ones packed in 0.54-0.565.
+Nobody found a magic signal.
 
-- Organizer bans target encoding *"using **test.csv**"* — a train-only,
-  past-only encoding isn't covered by that clause.
-- But: *"targeting specific **entity IDs** rather than behavioural patterns…
-  may be flagged during reproducibility review."* That's a human judgment call.
-- Our own PLAN.md ban is **broader than the organizer's text** (we also banned
-  "per-subgroup"), a deliberately conservative choice we made ourselves.
+## Final local scores
 
-Plausibly worth part of the 0.0134 gap to 1st; risk is forfeiting a top-15
-slot at reproducibility review. **I can measure the exact payoff without
-submitting anything** — building a feature locally is not a rules violation,
-only submitting a model that uses it would be.
+| Configuration | Jul 1-15 tail | 60-day windows |
+|---|---|---|
+| Live 0.53948 submission | 0.5204 | -- |
+| Arm C | 0.5252 | baseline |
+| **Arm C + propagation (final)** | -- | **+0.0150** |
 
-## Next
-
-Every queued experiment has now reported. **Final local score: 0.5252** on the
-Jul 1-15 tail (arm C), vs 0.5204 for the configuration currently sitting at
-0.53948 on the leaderboard — **+0.0048, ~2.4x the seed-noise std**, with the
-sign holding across three independent recent windows.
-
-The candidate is built, verified and waiting: `CANDIDATE_C_nograph_0.5252.csv`.
-**Nothing has been submitted and nothing will be without your explicit say-so.**
-
-What is left is genuinely thin. The three big knobs are now measured out:
-hyperparameters are at a flat optimum, the feature block gave what it had, and
-horizon decay is not fixable from our side. The one materially different lever
-we have never pulled is the per-entity target encoding in the open decision
-above -- still your call, and still measurable without submitting anything.
+Total local gain over what is on the leaderboard: **~+0.020**.
