@@ -580,3 +580,43 @@ Third calibration point, and it corrects the amplification factor:
 The two independent estimates agree closely, so ~2.2x amplification is a real
 property of this task rather than a coincidence of one measurement. Predicted
 ~0.554 for v8c, actual 0.55262 -- the closest projection made all competition.
+
+## Final submissions (deadline 2026-09-07 23:59 Dhaka)
+
+| ref | file | local tail | public LB | compliance |
+|---|---|---|---|---|
+| 56071582 | sanzid champion | -- | **0.56548** | arguable (propagation) |
+| 56069628 | `CANDIDATE_final_v5_0.5322.csv` | 0.5322 | 0.56492 | arguable (propagation) |
+| **56081?** | **`CANDIDATE_v9c_compliant_0.5280.csv`** | **0.5280** | **0.55368** | **fully compliant** |
+| 56080698 | `CANDIDATE_v8c_compliant_0.5263.csv` | 0.5263 | 0.55262 | fully compliant |
+| 56050378 | spw-removal pipeline | 0.5204 | 0.53948 | fully compliant |
+
+**Compliance now costs 0.0118** (0.56548 - 0.55368), down from 0.0129 before v9c.
+
+v9c = v8c + the backward-rich family. The 90-day specialist (0.5267) finally
+outscored the full-train model (0.5263), which it never had before -- the
+backward window features earn more on recent data, exactly as the July regime
+analysis predicted.
+
+### Fourth calibration point
+
+| local delta vs 0.5204 | LB delta vs 0.53948 | ratio |
+|---|---|---|
+| +0.0118 (v5) | +0.0254 | 2.15x |
+| +0.0059 (v8c) | +0.0131 | 2.22x |
+| +0.0076 (v9c) | +0.0142 | **1.87x** |
+
+Three independent estimates: 2.15x, 2.22x, 1.87x. Amplification is real and
+roughly 2x, but not a precise constant -- predicted 0.5564 for v9c, actual
+0.55368, an over-estimate of 0.0027.
+
+### Remaining decision: the two private selections
+
+Kaggle scores up to 2 selected submissions on the private 40%. If none are
+chosen it defaults to the best two PUBLIC scores -- which are both
+propagation-based, leaving no fallback if a reviewer reads the
+strictly-before-t rule strictly.
+
+Recommended pairing: **sanzid champion (0.56548) + v9c (0.55368)** -- keeps the
+top score while ensuring one selection needs no argument at all. Spearman
+between them is ~0.63, so they are genuinely different models.
