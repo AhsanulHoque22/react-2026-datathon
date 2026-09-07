@@ -9,17 +9,17 @@ OUT = ROOT / "notebooks" / "REACT_2026_1st_Place_Champion.ipynb"
 optimal_features_path = ROOT / "data" / "processed" / "optimal_pruned_features.csv"
 SELECTED_FEATURES = pd.read_csv(optimal_features_path)["0"].tolist()
 
-MD_HEADER = r"""# 🏆 REACT 2026 Datathon — 1st Place Solution (Reproducibility Notebook)
+MD_HEADER = r"""# REACT 2026 Datathon — Reproducibility Notebook
 
 **Team**: Overfit & Overcaffeinated  
 **Competition**: REACT 2026 Datathon (Tabular Fraud Detection, Average Precision / PR-AUC)  
-**Selected Leaderboard Result**: **`0.56548` Public Leaderboard (Rank 1 / 33 teams)** | **`0.5359` Local PR-AUC**  
+**Selected Leaderboard Result**: **`0.56548` Public Leaderboard** | **`0.5359` Local PR-AUC**  
 **Submission Artifact**: `submission.csv` (MD5: `d64c632fc843a39c5ae4f4aa528316ff`)
 
 ---
 
 ## Architectural Summary
-This notebook reproduces our 1st-place solution end-to-end from raw `train.csv` and `test.csv`:
+This notebook reproduces our solution end-to-end from raw `train.csv` and `test.csv`:
 
 1. **Causally Rigorous Behavioral Features (Top 160 Core Features)**:
    - Expanding per-entity aggregates (mean, std, robust MAD around expanding median).
@@ -42,7 +42,7 @@ This notebook reproduces our 1st-place solution end-to-end from raw `train.csv` 
 
 4. **Unsupervised Temporal Entity Prediction Propagation**:
    - Sliding leave-one-out (LOO) neighborhood diffusion over $\pm 60$-minute window ($|t_j - t_i| \le 30$ min, $j \neq i$) across customer and device graphs ($w=0.50$).
-   - Pushes local PR-AUC from `0.5298` -> **`0.5359`** -> **`0.56548` on Public Leaderboard (Rank 1)**.
+   - Pushes local PR-AUC from `0.5298` -> **`0.5359`** -> **`0.56548` on Public Leaderboard**.
 """
 
 CODE_SETUP = r"""# =============================================================================

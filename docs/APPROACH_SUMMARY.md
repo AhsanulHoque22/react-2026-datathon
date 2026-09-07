@@ -2,14 +2,14 @@
 
 **Competition**: REACT 2026 Datathon (Tabular Fraud Detection)  
 **Team**: Overfit & Overcaffeinated  
-**Final Selected Champion**: `submission.csv` (`CANDIDATE_tree_neural_propagated_0.5359.csv`, MD5: `d64c632fc843a39c5ae4f4aa528316ff`)  
-**Official Result**: **0.56548 Public Leaderboard (Rank 1 / 33 teams)** | **0.5359 Local Validation PR-AUC**  
+**Selected Submission**: `submission.csv` (`CANDIDATE_tree_neural_propagated_0.5359.csv`, MD5: `d64c632fc843a39c5ae4f4aa528316ff`)  
+**Official Result**: **0.56548 Public Leaderboard** | **0.5359 Local Validation PR-AUC**  
 
 ---
 
 ## 1. Executive Summary & Architectural Overview
 
-Detecting payment fraud under extreme class imbalance (1.76% prevalence), dynamic temporal regime shift, and strict zero-leakage constraints requires more than standard gradient boosted trees. Our winning approach integrates three complementary paradigms:
+Detecting payment fraud under extreme class imbalance (1.76% prevalence), dynamic temporal regime shift, and strict zero-leakage constraints requires more than standard gradient boosted trees. Our approach integrates three complementary paradigms:
 
 1. **Causally Rigorous Behavioral Feature Engineering**: 160 information-dense, scale-free features extracted with point-in-time causality assertions (strictly prior aggregates, sub-hour trailing bursts, robust MAD deviations, and bipartite entity novelty).
 2. **Dual-Horizon Tree-Neural Hybrid Architecture**: Fusing leaf-wise gradient-boosted decision trees (LightGBM) with a continuous deep neural manifold (Tabular ResNet) trained across two complementary temporal training horizons (Full-Train + 90-Day Specialist).
@@ -150,7 +150,7 @@ where $w = 0.50$. Transactions without in-window siblings (singletons) preserve 
 ### C. Compliance & Scope
 - **Zero Test Labels**: Operates strictly on model output probabilities, entity IDs, and timestamps. No parameters are estimated from `test.csv`.
 - **Scope**: Modifies only **4.7% of test rows** (the clustered bursts); 95.3% of rows pass through unchanged.
-- **Impact on Metric**: In Average Precision (PR-AUC), precision at the top of the ranked list dominates the score. Elevating high-confidence burst clusters and suppressing isolated false alarms produces massive metric lift (**0.5359 local $\to$ 0.56548 on Kaggle Public LB, Rank 1**).
+- **Impact on Metric**: In Average Precision (PR-AUC), precision at the top of the ranked list dominates the score. Elevating high-confidence burst clusters and suppressing isolated false alarms produces massive metric lift (**0.5359 local $\to$ 0.56548 on Kaggle Public LB**).
 
 ---
 
@@ -170,7 +170,7 @@ where $w = 0.50$. Transactions without in-window siblings (singletons) preserve 
 | **3. Feature Pruning** | Pruned to Top-160 core (eliminated tree feature dilution) | `0.5269` | — |
 | **4. Dual-Horizon Trees** | 48% Full-Train (882r) + 52% 90-Day Specialist (433r) | `0.5284` | — |
 | **5. Tree-Neural Fusion** | 88% Dual-Horizon LGBM + 12% Tabular ResNet | `0.5298` | — |
-| **6. Entity Propagation** | Sliding LOO temporal propagation ($\pm 60$m, $w=0.50$, cust + dev) | **`0.5359`** | **`0.56548` (Rank 1 🏆)** |
+| **6. Entity Propagation** | Sliding LOO temporal propagation ($\pm 60$m, $w=0.50$, cust + dev) | **`0.5359`** | **`0.56548`** |
 
 ---
 
