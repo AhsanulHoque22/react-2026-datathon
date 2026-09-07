@@ -85,9 +85,14 @@ prior, no post-inference blending, no future information anywhere. If the
 organiser reads the rule more strictly than we do, that submission stands on
 its own and we would ask for it to be scored instead.
 
-Files:
-- with propagation: `CANDIDATE_final_v5_0.5322.csv`
-- strictly-past only: `CANDIDATE_C_nograph_0.5252.csv`
+Our two selected submissions:
+- **`submission.csv`** (public LB 0.56548) -- includes the propagation step
+  described above. Reproduced by `REACT_2026_champion_reproducibility.ipynb`.
+- **`CANDIDATE_v9c_compliant_0.5280.csv`** (public LB 0.55368) -- strictly-past
+  only, no propagation, nothing to argue. Reproduced by
+  `REACT_2026_v9c_reproducibility.ipynb`.
+
+Both notebooks are in this folder alongside this document.
 
 ## What we excluded on the same reasoning
 
