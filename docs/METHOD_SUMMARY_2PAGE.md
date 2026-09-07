@@ -18,9 +18,9 @@ Strict temporal causality is enforced throughout: for every transaction at time 
 
 - **Scale-Free Behavioral Deviations**: Rather than raw amounts (which drift), amount is normalized against personal history:
   - `cust_amt_ratio`: Amount divided by the customer's prior expanding mean (single highest-gain feature).
-  - `cust_amt_robust_z`: Robust MAD-based z-score around expanding median: $(	ext{amt} - 	ext{median}) / (	ext{MAD} + \epsilon)$.
+  - `cust_amt_robust_z`: Robust MAD-based z-score around expanding median: $(\text{amt} - \text{median}) / (\text{MAD} + \epsilon)$.
 - **Traffic-Matched Trailing Windows**: Sub-hour and trailing windows (5m, 15m, 30m, 1h, 3h, 6h, 12h, 24h, 72h, 168h) using `closed="left"`. High-throughput devices and merchants leverage sub-hour windows to catch automated credential-stuffing bursts.
-- **Velocity Burst Acceleration**: Normalized velocity ratios like `cust_burst_accel` ($(	ext{cnt}_{1	ext{h}} 	imes 24) / (	ext{cnt}_{24	ext{h}} + 1)$) detect abrupt spikes relative to recent personal baselines.
+- **Velocity Burst Acceleration**: Normalized velocity ratios like `cust_burst_accel` ($(\text{cnt}_{1\text{h}} \times 24) / (\text{cnt}_{24\text{h}} + 1)$) detect abrupt spikes relative to recent personal baselines.
 - **Counterparty Expansion & Novelty**: Tracks real-time account takeover signals (`is_new_device_for_customer`, `is_new_location_for_customer`) and shared device concentration (`device_id_nunique_customer_for_device_prior`).
 
 ---
@@ -31,26 +31,25 @@ Empirical audits revealed an acute summer regime shift: modern attacks shifted h
 - **Dual-Horizon LightGBM Trees**:
   - *Full-Train Horizon (Jan 1 – Jul 15)*: 882 boosting rounds, `num_leaves=127`, `lr=0.02`, `feature_fraction=0.85`, `min_data_in_leaf=50`. Captures macro patterns and long-tail categories.
   - *90-Day Specialist Horizon (Apr 16 – Jul 15)*: 433 boosting rounds, `num_leaves=63`, `lr=0.02`, `feature_fraction=0.75`, `min_data_in_leaf=100`. Discards stale winter relationships and focuses on recent summer velocity attacks.
-  - *Horizon Blend*: $P_{	ext{LGBM}} = 0.48 \cdot P_{	ext{Full}} + 0.52 \cdot P_{90	ext{d}}$ (Local PR-AUC: **0.5284**).
+  - *Horizon Blend*: $P_{\text{LGBM}} = 0.48 \cdot P_{\text{Full}} + 0.52 \cdot P_{90\text{d}}$ (Local PR-AUC: **0.5284**).
 - **Tabular ResNet (Neural Manifold Regularization)**:
-  - *Architecture*: Continuous numerical features are standardized (`StandardScaler`, clipped to $[-5, 5]$); categorical features pass through learnable entity embeddings ($d pprox 1.6 	imes 	ext{card}^{0.56}$). The combined representation feeds into 3 Residual Blocks (`LayerNorm` $	o$ `Linear(256, 512)` $	o$ `GELU` $	o$ `Dropout(0.15)` $	o$ `Linear(512, 256)` $	o$ `Dropout(0.15)` $	o$ Skip Connection).
+  - *Architecture*: Continuous numerical features are standardized (`StandardScaler`, clipped to $[-5, 5]$); categorical features pass through learnable entity embeddings ($d \approx 1.6 \times \text{card}^{0.56}$). The combined representation feeds into 3 Residual Blocks (`LayerNorm` $\to$ `Linear(256, 512)` $\to$ `GELU` $\to$ `Dropout(0.15)` $\to$ `Linear(512, 256)` $\to$ `Dropout(0.15)` $\to$ Skip Connection).
   - *Training*: Trained for 8 epochs using AdamW (`lr=1e-3`, `wd=1e-4`) with `CosineAnnealingLR`.
-  - *Tree-Neural Blend*: $P_{	ext{raw}} = 0.88 \cdot P_{	ext{LGBM}} + 0.12 \cdot P_{	ext{ResNet}}$ (**0.5298** PR-AUC). The continuous neural manifold smooths orthogonal tree step boundaries, rescuing borderline false negatives.
+  - *Tree-Neural Blend*: $P_{\text{raw}} = 0.88 \cdot P_{\text{LGBM}} + 0.12 \cdot P_{\text{ResNet}}$ (**0.5298** PR-AUC). The continuous neural manifold smooths orthogonal tree step boundaries, rescuing borderline false negatives.
 
 ---
 
 ### 4. Post-Processing: Temporal Entity Prediction Propagation
-Fraud in payment rails is inherently bursty. Analysis revealed strong empirical sibling clustering: $P(	ext{sibling fraud} \mid 	ext{current fraud})$ is **3.87x baseline** on devices and **2.63x** on customers. To reflect this, we apply an unsupervised leave-one-out (LOO) temporal diffusion process over a sliding $\pm 60$-minute window ($|t_j - t_i| \le 30$ min, $j 
-eq i$):
+Fraud in payment rails is inherently bursty. Analysis revealed strong empirical sibling clustering: $P(\text{sibling fraud} \mid \text{current fraud})$ is **3.87x baseline** on devices and **2.63x** on customers. To reflect this, we apply an unsupervised leave-one-out (LOO) temporal diffusion process over a sliding $\pm 60$-minute window ($|t_j - t_i| \le 30$ min, $j \neq i$):
 
-$$P_{	ext{final}}(i) = (1 - w) \cdot P_{	ext{raw}}(i) + w \cdot rac{1}{2} \left[ ar{P}_{	ext{LOO, cust}}(i) + ar{P}_{	ext{LOO, dev}}(i) ight]$$
+$$P_{\text{final}}(i) = (1 - w) \cdot P_{\text{raw}}(i) + w \cdot \frac{1}{2} \left[ \bar{P}_{\text{LOO, cust}}(i) + \bar{P}_{\text{LOO, dev}}(i) \right]$$
 
 with $w = 0.50$. Transactions without in-window siblings (singletons, 95.3% of test rows) pass through completely unchanged; the blend refines only the 4.7% of transactions occurring in bursts. The operation touches zero labels and fits zero test parameters. This elevates high-confidence burst clusters and suppresses isolated noise, driving local PR-AUC to **0.5359** and Kaggle Public LB to **0.56548**.
 
 ---
 
 ### 5. Validation Strategy, Technical Decisions & Results
-- **Validation Discipline**: Evaluated on a chronological holdout tail (**July 1 – July 15**, 59,465 transactions). Seed noise was measured at $\sigma pprox 0.0020$; innovations were retained only if lifts exceeded this noise floor.
+- **Validation Discipline**: Evaluated on a chronological holdout tail (**July 1 – July 15**, 59,465 transactions). Seed noise was measured at $\sigma \approx 0.0020$; innovations were retained only if lifts exceeded this noise floor.
 - **Key Negative Findings (Avoided Traps)**:
   - *Class Weighting*: Removing `scale_pos_weight=55` gave +0.026 LB. Weighted loss distorts ranking calibration under PR-AUC.
   - *Forward Features*: Discarded forward-looking window experiments (+0.024 local lift) to maintain strict rule compliance.
