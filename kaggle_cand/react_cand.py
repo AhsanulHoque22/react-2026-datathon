@@ -793,9 +793,20 @@ def precision_recall_at_k(y_true, y_score, k_frac):
 #
 # Device works, but only blocked. Unblocked it pools 28 rows spanning weeks and
 # loses, which is why it was wrongly written off at first.
-PROP_W = 0.10
-PROP_BLOCK_HOURS = 24
+PROP_W = 0.50
+PROP_WINDOW_MINUTES = 60
 PROP_ENTITIES = ("customer_id", "device_id")
+
+# Final propagation settings, searched to a bracketed optimum:
+#   window  +/-60min is a peak -- +/-5/15/30 below it and +/-120/240 above it
+#           are all lower. Sliding matched fixed 1h blocks (+0.0150 vs
+#           +0.0148), so boundary effects turned out not to matter.
+#   weight  0.5-0.6 is a plateau, falling away by 0.8. 0.5 is taken over 0.6
+#           at equal measured value, being the less aggressive of the two.
+# Worth +0.0150 on 60-day windows whose group structure matches the test set
+# (6.9 rows/customer vs test's 7.5), and every window improves including the
+# fold2 guard at +0.0149 -- it is not trading the easy regime for the hard one.
+# That is 3x the +0.0049 the first customer-only 7-day version was worth.
 
 
 def _loo_mean(p, ids, block):
@@ -808,7 +819,7 @@ def _loo_mean(p, ids, block):
 
 
 def blocked_loo_blend(preds, entity_ids, timestamps, w: float = PROP_W,
-                      block_hours: int = PROP_BLOCK_HOURS):
+                      block_hours: int = 24):
     """Blend preds with the mean per-entity leave-one-out score inside each
     time block.
 
@@ -830,7 +841,8 @@ def blocked_loo_blend(preds, entity_ids, timestamps, w: float = PROP_W,
     return (1.0 - w) * p + w * loo
 
 
-def sliding_loo_blend(preds, entity_ids, timestamps, w: float = 0.2, window_minutes: float = 60.0):
+def sliding_loo_blend(preds, entity_ids, timestamps, w: float = PROP_W,
+                      window_minutes: float = PROP_WINDOW_MINUTES):
     """Leave-one-out blend over a true SLIDING time window per entity.
 
     Fixed blocks get crude as the window tightens -- two transactions ten
@@ -929,7 +941,7 @@ def main():
                       callbacks=[lgb.early_stopping(200, verbose=False), lgb.log_evaluation(period=0)])
     ph = probe.predict(X_h, num_iteration=probe.best_iteration)
     raw_ap = average_precision_score(y_h, ph)
-    bl_ap = average_precision_score(y_h, blocked_loo_blend(ph, {e: hold[e].values for e in PROP_ENTITIES}, hold[TIME_COL]))
+    bl_ap = average_precision_score(y_h, sliding_loo_blend(ph, {e: hold[e].values for e in PROP_ENTITIES}, hold[TIME_COL]))
     rounds = int(round(probe.best_iteration * 1.1))
     print(f"held-out(Jul01-15) raw={raw_ap:.4f}  blended={bl_ap:.4f}  ({bl_ap-raw_ap:+.4f})  "
           f"rounds={rounds}", flush=True)
@@ -943,7 +955,7 @@ def main():
     ds = lgb.Dataset(X_full, label=y_full, categorical_feature=cc, free_raw_data=False)
     raw = np.mean([lgb.train(dict(P, seed=s, bagging_seed=s, feature_fraction_seed=s),
                              ds, num_boost_round=rounds).predict(X_test) for s in (0, 1, 2, 3, 4)], axis=0)
-    preds = blocked_loo_blend(raw, {e: test_df[e].values for e in PROP_ENTITIES}, test_df[TIME_COL])
+    preds = sliding_loo_blend(raw, {e: test_df[e].values for e in PROP_ENTITIES}, test_df[TIME_COL])
 
     g = test_df.groupby("customer_id").size()
     print(f"\ntest groups: rows/cust mean={g.mean():.1f} singletons={(g==1).mean():.1%}; "
