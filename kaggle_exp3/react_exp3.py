@@ -722,6 +722,83 @@ def add_forward_window_features(df: pd.DataFrame, entity_col: str, prefix: str,
     new[f"{prefix}_seconds_to_next"] = z
     return pd.concat([df, pd.DataFrame(new, index=df.index)], axis=1)
 
+
+def add_forward_rich_features(df: pd.DataFrame, entity_col: str, prefix: str,
+                              windows_min=(15, 60, 360, 1440), ratios: bool = True) -> pd.DataFrame:
+    """Forward/backward/symmetric window counts and sums, plus the quantities
+    that only become expressible once you can look forward.
+
+    The plain forward features turned out to be the strongest signal in the
+    model (`cust_sym_cnt_60m` is #2 by gain), but only two horizons were ever
+    tried. This widens the ladder and adds two derived families:
+
+      accel_w         forward count / backward count -- is this entity
+                      speeding up right now, rather than merely busy
+      amt_vs_sym_w    this amount against the mean of its own surrounding
+                      window, the two-sided version of the prior-only ratios
+                      that dominate the old feature set
+
+    Uses no labels; safe on test rows for the same reason the rest is."""
+    t = (df[TIME_COL] - df[TIME_COL].min()).dt.total_seconds().to_numpy()
+    codes = pd.factorize(df[entity_col].astype(str))[0].astype("int64")
+    amt = df["amount_bdt"].to_numpy(dtype="float64")
+    n = len(df)
+
+    max_sec = max(windows_min) * 60.0
+    span = (t.max() - t.min()) + max_sec + 1.0
+    key = codes * span + t
+    o = np.argsort(key, kind="stable")
+    ks, amts = key[o], amt[o]
+    csum = np.concatenate([[0.0], np.cumsum(amts)])
+    idx = np.arange(n)
+    amt_sorted = amts
+
+    new = {}
+
+    def scatter(name, arr_sorted):
+        z = np.empty(n, dtype="float64")
+        z[o] = arr_sorted
+        new[name] = z
+
+    for w in windows_min:
+        sec = w * 60.0
+        hi = np.searchsorted(ks, ks + sec, side="right")
+        lo = np.searchsorted(ks, ks - sec, side="left")
+        fwd_n = (hi - idx - 1).astype("float64")
+        bwd_n = (idx - lo).astype("float64")
+        sym_n = fwd_n + bwd_n
+        fwd_a = csum[hi] - csum[idx + 1]
+        bwd_a = csum[idx] - csum[lo]
+        sym_a = fwd_a + bwd_a
+        scatter(f"{prefix}_fwd_cnt_{w}m", fwd_n)
+        scatter(f"{prefix}_sym_cnt_{w}m", sym_n)
+        scatter(f"{prefix}_fwd_amtsum_{w}m", fwd_a)
+        scatter(f"{prefix}_sym_amtsum_{w}m", sym_a)
+        if ratios:
+            # +1 on both sides so a quiet entity reads as 1.0 rather than 0/0
+            scatter(f"{prefix}_accel_{w}m", (fwd_n + 1.0) / (bwd_n + 1.0))
+            sym_mean = sym_a / np.maximum(sym_n, 1.0)
+            scatter(f"{prefix}_amt_vs_sym_{w}m", amt_sorted / (sym_mean + EPS))
+
+    # time to this entity's next and second-next transaction, and the
+    # forward/backward gap ratio
+    ts = t[o]
+    same1 = np.zeros(n, dtype=bool)
+    same1[:-1] = codes[o][:-1] == codes[o][1:]
+    nxt = np.full(n, np.nan)
+    nxt[:-1] = np.where(same1[:-1], ts[1:] - ts[:-1], np.nan)
+    scatter(f"{prefix}_seconds_to_next", nxt)
+    if n > 2:
+        same2 = np.zeros(n, dtype=bool)
+        same2[:-2] = codes[o][:-2] == codes[o][2:]
+        nxt2 = np.full(n, np.nan)
+        nxt2[:-2] = np.where(same2[:-2], ts[2:] - ts[:-2], np.nan)
+        scatter(f"{prefix}_seconds_to_next2", nxt2)
+    prev = np.full(n, np.nan)
+    prev[1:] = np.where(codes[o][1:] == codes[o][:-1], ts[1:] - ts[:-1], np.nan)
+    scatter(f"{prefix}_gap_fwd_vs_bwd", (nxt + 1.0) / (prev + 1.0))
+    return pd.concat([df, pd.DataFrame(new, index=df.index)], axis=1)
+
 # ===================== src/model.py =====================
 CAT_COLS = ["merchant_category", "device_type", "location", "payment_method", "transaction_type"]
 # log_amount_bdt is a helper column for the log-space z-scores, not a model

@@ -1031,12 +1031,21 @@ FINAL_PARAMS = dict(
 )
 
 
-# ====== the block-size trend went 3d > 7d > 14d > 30d. Does it continue? ====
-# Every scheme in the sweep preferred tighter blocks, and 3 days was the
-# tightest tested -- so the optimum may be below it, or 3 may be the turn.
-# There is a real tension: a tighter block means more relevant siblings but
-# fewer of them, and at 1 day most rows become singletons and the blend
-# degenerates to a no-op. This finds the turn.
+# ====== the forward family is under-explored; widen it =====================
+# v7 sampled exactly two forward horizons (60m, 1440m) across three entities
+# and landed cust_sym_cnt_60m as the #2 feature in the model at 16.2% gain.
+# That is a strong signal explored at two points.
+#
+# Arms:
+#   A  v7 as shipped (60m, 1440m, counts+sums+seconds_to_next)
+#   B  wider ladder, same statistics
+#   C  wider ladder + the quantities only forward windows make expressible:
+#      accel (forward count / backward count -- speeding up, not merely busy)
+#      and amount vs the SURROUNDING window mean, the two-sided version of the
+#      prior-only ratios that dominate the old feature set
+#
+# C adds ~126 columns to 197, so dilution is a live risk and B exists to
+# separate "more horizons" from "more kinds of thing".
 def main():
     t0 = time.time()
     train = pd.read_csv(TRAIN_CSV, parse_dates=[TIME_COL])
@@ -1045,92 +1054,85 @@ def main():
     assert_frame_sane(df)
     del train, test
     gc.collect()
-    df = build_features(df)
-    feature_cols, cat_cols = get_feature_columns(df)
-    cols = [c for c in feature_cols if "component_size_prior" not in c]
-    cc = [c for c in cat_cols if c in cols]
-    labeled = df[~df["is_test"]]
-    test_df = df[df["is_test"]]
+    base = build_features(df)
     del df
     gc.collect()
-    print(f"featurized, {len(cols)} features ({time.time()-t0:.0f}s)", flush=True)
+    base_cols, cat_cols = get_feature_columns(base)
+    BASE = [c for c in base_cols if "component_size_prior" not in c]
+    print(f"base {len(BASE)} features ({time.time()-t0:.0f}s)", flush=True)
 
-    # how much of the TEST set each block size would actually touch
-    tdays = (test_df[TIME_COL] - test_df[TIME_COL].min()).dt.days.to_numpy()
-    print("\ntest-set coverage by block size (share of rows with >=1 sibling):")
-    for b in (1, 2, 3, 5, 7):
-        blk = (tdays // b).astype("int64")
-        cov = []
-        for e in ("customer_id", "device_id"):
-            k = np.char.add(np.char.add(test_df[e].astype(str).to_numpy(), "|"), blk.astype(str))
-            cov.append(float((pd.Series(k).groupby(k).transform("size").to_numpy() > 1).mean()))
-        print(f"   block={b}d  customer {cov[0]:.1%}   device {cov[1]:.1%}")
+    ENTS = (("customer_id", "cust"), ("device_id", "dev"), ("merchant_id", "merch"))
+    variants = {}
+    d = base
+    for col, pre in ENTS:
+        d = add_forward_window_features(d, col, pre, windows_min=(60, 1440))
+    variants["A_v7 (2 horizons)"] = d
+    d2 = base
+    for col, pre in ENTS:
+        d2 = add_forward_rich_features(d2, col, pre,
+                                       windows_min=(5, 15, 60, 180, 720, 1440), ratios=False)
+    variants["B_wide ladder"] = d2
+    d3 = base
+    for col, pre in ENTS:
+        d3 = add_forward_rich_features(d3, col, pre,
+                                       windows_min=(5, 15, 60, 180, 720, 1440), ratios=True)
+    variants["C_wide + accel/ratios"] = d3
+    del base
+    gc.collect()
 
     WINDOWS = {"LONG May17-Jul16": ("2026-05-17", "2026-07-16"),
-               "LONG Apr01-Jun01": ("2026-04-01", "2026-06-01")}
-    BLOCKS = [1, 2, 3, 4, 5, 7]
-    WEIGHTS = [0.05, 0.075, 0.10, 0.125, 0.15]
+               "LONG Apr01-Jun01": ("2026-04-01", "2026-06-01"),
+               "fold2-guard": ("2026-06-18", "2026-07-02")}
 
-    def loo_for(p, ids, block):
-        key = np.char.add(np.char.add(ids.astype(str), "|"), block.astype(str))
-        sp = pd.Series(p, index=key)
-        g = sp.groupby(level=0)
-        n = g.transform("size").to_numpy()
-        tot = g.transform("sum").to_numpy()
-        return np.where(n > 1, (tot - p) / np.maximum(n - 1, 1), p)
-
-    results = {}
-    for wname, (s_, e_) in WINDOWS.items():
-        s_ts, e_ts = pd.Timestamp(s_), pd.Timestamp(e_)
-        tr = labeled.loc[labeled[TIME_COL] < s_ts]
-        va = labeled.loc[(labeled[TIME_COL] >= s_ts) & (labeled[TIME_COL] < e_ts)]
-        X_tr, y_tr = prepare_lgb_frame(tr, cols, cc), tr[LABEL_COL].astype(int)
-        X_va, y_va = prepare_lgb_frame(va, cols, cc), va[LABEL_COL].astype(int)
-        yv = y_va.values
-        days = (va[TIME_COL] - va[TIME_COL].min()).dt.days.to_numpy()
-        cid = va["customer_id"].astype(str).to_numpy()
-        did = va["device_id"].astype(str).to_numpy()
-        acc = {(b, w): [] for b in BLOCKS for w in WEIGHTS}
-        base = []
-        for seed in (0, 1, 2):
-            params = dict(objective="binary", metric="None", verbosity=-1,
-                          learning_rate=0.02, num_leaves=127, feature_fraction=0.85,
-                          bagging_fraction=0.85, bagging_freq=1, min_data_in_leaf=50,
-                          seed=seed, bagging_seed=seed, feature_fraction_seed=seed)
-            ds_tr = lgb.Dataset(X_tr, label=y_tr, categorical_feature=cc, free_raw_data=False)
-            ds_va = lgb.Dataset(X_va, label=y_va, categorical_feature=cc, reference=ds_tr, free_raw_data=False)
-            bst = lgb.train(params, ds_tr, num_boost_round=4000, valid_sets=[ds_va],
-                            feval=make_pr_auc_feval(y_va.values, seed=seed),
-                            callbacks=[lgb.early_stopping(200, verbose=False),
-                                       lgb.log_evaluation(period=0)])
-            p = bst.predict(X_va, num_iteration=bst.best_iteration)
-            base.append(average_precision_score(yv, p))
-            for b in BLOCKS:
-                blk = (days // b).astype("int64")
-                loo = 0.5 * (loo_for(p, cid, blk) + loo_for(p, did, blk))
-                for w in WEIGHTS:
-                    acc[(b, w)].append(average_precision_score(yv, (1 - w) * p + w * loo))
-        results[wname] = {"base": float(np.mean(base)),
-                          **{k: (float(np.mean(v)), float(np.std(v))) for k, v in acc.items()}}
-        print(f"\n  {wname}: base {np.mean(base):.4f} [{time.time()-t0:.0f}s]", flush=True)
-        del X_tr, X_va
+    res = {}
+    for vname, frame in variants.items():
+        cols, cats = get_feature_columns(frame)
+        cols = [c for c in cols if "component_size_prior" not in c]
+        cc = [c for c in cats if c in cols]
+        lab = frame[~frame["is_test"]]
+        res[vname] = {}
+        print(f"\n  {vname}: {len(cols)} features", flush=True)
+        for wname, (s_, e_) in WINDOWS.items():
+            s_ts, e_ts = pd.Timestamp(s_), pd.Timestamp(e_)
+            tr = lab.loc[lab[TIME_COL] < s_ts]
+            va = lab.loc[(lab[TIME_COL] >= s_ts) & (lab[TIME_COL] < e_ts)]
+            X_tr, y_tr = prepare_lgb_frame(tr, cols, cc), tr[LABEL_COL].astype(int)
+            X_va, y_va = prepare_lgb_frame(va, cols, cc), va[LABEL_COL].astype(int)
+            aps = []
+            for seed in (0, 1, 2):
+                prm = dict(objective="binary", metric="None", verbosity=-1, learning_rate=0.02,
+                           num_leaves=127, feature_fraction=0.85, bagging_fraction=0.85,
+                           bagging_freq=1, min_data_in_leaf=50, seed=seed, bagging_seed=seed,
+                           feature_fraction_seed=seed)
+                ds_tr = lgb.Dataset(X_tr, label=y_tr, categorical_feature=cc, free_raw_data=False)
+                ds_va = lgb.Dataset(X_va, label=y_va, categorical_feature=cc,
+                                    reference=ds_tr, free_raw_data=False)
+                bst = lgb.train(prm, ds_tr, num_boost_round=4000, valid_sets=[ds_va],
+                                feval=make_pr_auc_feval(y_va.values, seed=seed),
+                                callbacks=[lgb.early_stopping(200, verbose=False),
+                                           lgb.log_evaluation(period=0)])
+                aps.append(average_precision_score(y_va, bst.predict(X_va, num_iteration=bst.best_iteration)))
+                if seed == 0 and wname.startswith("LONG May"):
+                    imp = pd.Series(bst.feature_importance("gain"), index=cols).sort_values(ascending=False)
+                    tot = imp.sum()
+                    print(f"      top-6: " + ", ".join(f"{c} {100*imp[c]/tot:.1f}%" for c in imp.index[:6]),
+                          flush=True)
+            res[vname][wname] = (float(np.mean(aps)), float(np.std(aps)))
+            print(f"    {wname:18s} {np.mean(aps):.4f} +/- {np.std(aps):.4f}  [{time.time()-t0:.0f}s]",
+                  flush=True)
+            del X_tr, X_va
+            gc.collect()
+        del frame
         gc.collect()
 
-    print("\n===== cust+dev: mean delta on LONG windows, by block and weight =====")
-    print(f"{'block':>6}" + "".join(f"{('w='+str(w)):>12}" for w in WEIGHTS))
-    best = None
-    for b in BLOCKS:
-        row = f"{b:>5}d"
-        for w in WEIGHTS:
-            d = np.mean([results[wn][(b, w)][0] - results[wn]["base"] for wn in WINDOWS])
-            row += f"{d:>+12.4f}"
-            if best is None or d > best[0]:
-                best = (d, b, w)
-        print(row)
-    d, b, w = best
-    cur = np.mean([results[wn][(3, 0.075)][0] - results[wn]["base"] for wn in WINDOWS])
-    print(f"\nbest: block={b}d w={w} -> {d:+.4f};  current pick (3d, 0.075) -> {cur:+.4f}")
-    print(f"difference {d-cur:+.4f} (seed-noise std ~0.0020 -- keep 3d/0.075 unless this clears it)")
+    LONG = [w for w in WINDOWS if w.startswith("LONG")]
+    print("\n============ WIDENING THE FORWARD FAMILY ============")
+    print(f"{'variant':24s}{'LONG mean':>12}{'guard':>10}{'vs v7':>10}")
+    b = np.mean([res["A_v7 (2 horizons)"][w][0] for w in LONG])
+    for v in variants:
+        m = np.mean([res[v][w][0] for w in LONG])
+        print(f"{v:24s}{m:>12.4f}{res[v]['fold2-guard'][0]:>10.4f}{m-b:>+10.4f}")
+    print("\nAt the measured ~2.15x local->LB amplification, +0.002 local is ~+0.004 board.")
 
 
 if __name__ == "__main__":
