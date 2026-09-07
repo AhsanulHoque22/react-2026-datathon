@@ -828,12 +828,12 @@ FINAL_PARAMS = dict(
 )
 
 
-# ===== properly powered follow-up: is customer-level propagation real? =====
-# The first pass found customer loo_mean at w=0.1 positive on both windows,
-# averaging exactly the +0.004 threshold -- but each blend was a single AP with
-# no error bar, which is precisely the trap that produced seven false results
-# earlier in this competition. This runs 4 windows x 3 seeds and reports a
-# mean +/- std per weight, so the answer is a measurement rather than a reading.
+# ====== the block-size trend went 3d > 7d > 14d > 30d. Does it continue? ====
+# Every scheme in the sweep preferred tighter blocks, and 3 days was the
+# tightest tested -- so the optimum may be below it, or 3 may be the turn.
+# There is a real tension: a tighter block means more relevant siblings but
+# fewer of them, and at 1 day most rows become singletons and the blend
+# degenerates to a no-op. This finds the turn.
 def main():
     t0 = time.time()
     train = pd.read_csv(TRAIN_CSV, parse_dates=[TIME_COL])
@@ -847,20 +847,36 @@ def main():
     cols = [c for c in feature_cols if "component_size_prior" not in c]
     cc = [c for c in cat_cols if c in cols]
     labeled = df[~df["is_test"]]
+    test_df = df[df["is_test"]]
     del df
     gc.collect()
     print(f"featurized, {len(cols)} features ({time.time()-t0:.0f}s)", flush=True)
 
-    WINDOWS = {
-        "Jun25-Jul02": ("2026-06-25", "2026-07-02"),
-        "Jul02-Jul08": ("2026-07-02", "2026-07-08"),
-        "Jul08-Jul16": ("2026-07-08", "2026-07-16"),
-        "fold2-guard": ("2026-06-18", "2026-07-02"),
-    }
-    WEIGHTS = [0.0, 0.05, 0.10, 0.15, 0.20]
-    ENTS = ["customer_id", "device_id"]
+    # how much of the TEST set each block size would actually touch
+    tdays = (test_df[TIME_COL] - test_df[TIME_COL].min()).dt.days.to_numpy()
+    print("\ntest-set coverage by block size (share of rows with >=1 sibling):")
+    for b in (1, 2, 3, 5, 7):
+        blk = (tdays // b).astype("int64")
+        cov = []
+        for e in ("customer_id", "device_id"):
+            k = np.char.add(np.char.add(test_df[e].astype(str).to_numpy(), "|"), blk.astype(str))
+            cov.append(float((pd.Series(k).groupby(k).transform("size").to_numpy() > 1).mean()))
+        print(f"   block={b}d  customer {cov[0]:.1%}   device {cov[1]:.1%}")
 
-    per_window = {}
+    WINDOWS = {"LONG May17-Jul16": ("2026-05-17", "2026-07-16"),
+               "LONG Apr01-Jun01": ("2026-04-01", "2026-06-01")}
+    BLOCKS = [1, 2, 3, 4, 5, 7]
+    WEIGHTS = [0.05, 0.075, 0.10, 0.125, 0.15]
+
+    def loo_for(p, ids, block):
+        key = np.char.add(np.char.add(ids.astype(str), "|"), block.astype(str))
+        sp = pd.Series(p, index=key)
+        g = sp.groupby(level=0)
+        n = g.transform("size").to_numpy()
+        tot = g.transform("sum").to_numpy()
+        return np.where(n > 1, (tot - p) / np.maximum(n - 1, 1), p)
+
+    results = {}
     for wname, (s_, e_) in WINDOWS.items():
         s_ts, e_ts = pd.Timestamp(s_), pd.Timestamp(e_)
         tr = labeled.loc[labeled[TIME_COL] < s_ts]
@@ -868,8 +884,11 @@ def main():
         X_tr, y_tr = prepare_lgb_frame(tr, cols, cc), tr[LABEL_COL].astype(int)
         X_va, y_va = prepare_lgb_frame(va, cols, cc), va[LABEL_COL].astype(int)
         yv = y_va.values
-        # per-seed so each blend gets a genuine standard deviation
-        scores = {(ent, w): [] for ent in ENTS for w in WEIGHTS}
+        days = (va[TIME_COL] - va[TIME_COL].min()).dt.days.to_numpy()
+        cid = va["customer_id"].astype(str).to_numpy()
+        did = va["device_id"].astype(str).to_numpy()
+        acc = {(b, w): [] for b in BLOCKS for w in WEIGHTS}
+        base = []
         for seed in (0, 1, 2):
             params = dict(objective="binary", metric="None", verbosity=-1,
                           learning_rate=0.02, num_leaves=127, feature_fraction=0.85,
@@ -882,37 +901,33 @@ def main():
                             callbacks=[lgb.early_stopping(200, verbose=False),
                                        lgb.log_evaluation(period=0)])
             p = bst.predict(X_va, num_iteration=bst.best_iteration)
-            for ent in ENTS:
-                sp = pd.Series(p, index=va[ent].values)
-                grp = sp.groupby(level=0)
-                n_ent = grp.transform("size").to_numpy()
-                tot = grp.transform("sum").to_numpy()
-                loo = np.where(n_ent > 1, (tot - p) / np.maximum(n_ent - 1, 1), p)
+            base.append(average_precision_score(yv, p))
+            for b in BLOCKS:
+                blk = (days // b).astype("int64")
+                loo = 0.5 * (loo_for(p, cid, blk) + loo_for(p, did, blk))
                 for w in WEIGHTS:
-                    scores[(ent, w)].append(average_precision_score(yv, (1 - w) * p + w * loo))
-        per_window[wname] = {k: (float(np.mean(v)), float(np.std(v))) for k, v in scores.items()}
-        for ent in ENTS:
-            line = f"  {wname:12s} {ent:12s}"
-            for w in WEIGHTS:
-                m, sd = per_window[wname][(ent, w)]
-                line += f"  w={w}:{m:.4f}+-{sd:.4f}"
-            print(line, flush=True)
+                    acc[(b, w)].append(average_precision_score(yv, (1 - w) * p + w * loo))
+        results[wname] = {"base": float(np.mean(base)),
+                          **{k: (float(np.mean(v)), float(np.std(v))) for k, v in acc.items()}}
+        print(f"\n  {wname}: base {np.mean(base):.4f} [{time.time()-t0:.0f}s]", flush=True)
         del X_tr, X_va
         gc.collect()
 
-    print("\n============ PROPAGATION, 4 WINDOWS x 3 SEEDS ============")
-    recent = [w for w in WINDOWS if w != "fold2-guard"]
-    for ent in ENTS:
-        print(f"\n{ent}:")
-        b = np.mean([per_window[w][(ent, 0.0)][0] for w in recent])
-        for wt in WEIGHTS:
-            rm = np.mean([per_window[w][(ent, wt)][0] for w in recent])
-            n_up = sum(per_window[w][(ent, wt)][0] > per_window[w][(ent, 0.0)][0] for w in recent)
-            worst = min(per_window[w][(ent, wt)][0] - per_window[w][(ent, 0.0)][0] for w in recent)
-            guard = per_window["fold2-guard"][(ent, wt)][0] - per_window["fold2-guard"][(ent, 0.0)][0]
-            ok = (rm - b) >= 0.004 and n_up >= 2 and worst >= -0.003
-            print(f"  w={wt:<5} recent-mean {rm:.4f} (delta {rm-b:+.4f}), {n_up}/3 up, "
-                  f"worst {worst:+.4f}, guard {guard:+.4f} -> {'ACCEPT' if ok else 'reject'}")
+    print("\n===== cust+dev: mean delta on LONG windows, by block and weight =====")
+    print(f"{'block':>6}" + "".join(f"{('w='+str(w)):>12}" for w in WEIGHTS))
+    best = None
+    for b in BLOCKS:
+        row = f"{b:>5}d"
+        for w in WEIGHTS:
+            d = np.mean([results[wn][(b, w)][0] - results[wn]["base"] for wn in WINDOWS])
+            row += f"{d:>+12.4f}"
+            if best is None or d > best[0]:
+                best = (d, b, w)
+        print(row)
+    d, b, w = best
+    cur = np.mean([results[wn][(3, 0.075)][0] - results[wn]["base"] for wn in WINDOWS])
+    print(f"\nbest: block={b}d w={w} -> {d:+.4f};  current pick (3d, 0.075) -> {cur:+.4f}")
+    print(f"difference {d-cur:+.4f} (seed-noise std ~0.0020 -- keep 3d/0.075 unless this clears it)")
 
 
 if __name__ == "__main__":

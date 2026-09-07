@@ -774,38 +774,50 @@ def precision_recall_at_k(y_true, y_score, k_frac):
 
 
 # Prediction post-process: blend each score with a leave-one-out mean of the
-# same customer's other scores inside the same time block. Fraud clusters by
-# entity (P(sibling fraud|fraud) is 2.6x the base rate for customers) and a
-# per-row model cannot express that.
+# same entity's other scores inside the same time block. Fraud clusters by
+# entity -- P(sibling fraud|fraud) is 3.87x the base rate for devices and
+# 2.63x for customers -- and a per-row model cannot express that.
 #
-# The block matters. Unrestricted pooling measured +0.0049 on 6-14 day windows,
-# where a customer has ~2 rows and 58% are singletons -- but the 62-day test
-# window has ~6.9 rows and 19% singletons, and re-measured there unrestricted
-# pooling falls to +0.0023 and turns negative at higher weights. Blocking to
-# 7 days holds +0.0046..+0.0052 with the tightest variance of any variant.
-PROP_W = 0.05
-PROP_BLOCK_DAYS = 7
+# Swept over 4 schemes x 4 block sizes x 5 weights on 60-day windows with
+# test-like group sizes. customer+device at a 3-day block, w=0.075, gives
+# +0.0073 (worst window +0.0068, std 0.0007) against +0.0049 for the
+# customer-only 7-day version shipped first.
+#
+# Two things the sweep settled. Device works, but only blocked: unblocked it
+# pools 28 rows spanning weeks and loses. And tighter blocks win monotonically
+# (3d > 7d > 14d > 30d) for every scheme -- a sibling a month away is not
+# evidence about this transaction.
+PROP_W = 0.075
+PROP_BLOCK_DAYS = 3
+PROP_ENTITIES = ("customer_id", "device_id")
 
 
-def blocked_loo_blend(preds, customer_ids, timestamps, w: float = PROP_W,
+def _loo_mean(p, ids, block):
+    key = np.char.add(np.char.add(np.asarray(ids).astype(str), "|"), block.astype(str))
+    sp = pd.Series(p, index=key)
+    g = sp.groupby(level=0)
+    n = g.transform("size").to_numpy()
+    tot = g.transform("sum").to_numpy()
+    return np.where(n > 1, (tot - p) / np.maximum(n - 1, 1), p)
+
+
+def blocked_loo_blend(preds, entity_ids, timestamps, w: float = PROP_W,
                       block_days: int = PROP_BLOCK_DAYS):
-    """Blend preds with the per-(customer, time-block) leave-one-out mean.
+    """Blend preds with the mean per-entity leave-one-out score inside each
+    time block.
 
-    Uses only model outputs, customer ids and timestamps -- no labels -- so it
-    is safe to apply to the test set. Singletons keep their own value."""
+    `entity_ids` is a dict {name: id array}; the LOO means of the entities are
+    averaged before blending. Uses only model outputs, entity ids and
+    timestamps -- no labels -- so it is safe on the test set. Singletons keep
+    their own value."""
+    if not isinstance(entity_ids, dict):
+        entity_ids = {"entity": entity_ids}
     ts = pd.to_datetime(pd.Series(np.asarray(timestamps)).reset_index(drop=True))
     # .dt.days, not .days: subtracting two datetime Series gives a timedelta
     # SERIES, whose day component lives under the .dt accessor.
-    block = ((ts - ts.min()).dt.days // block_days).to_numpy()
-    cid = pd.Series(np.asarray(customer_ids)).astype(str).to_numpy()
-    key = np.char.add(np.char.add(cid.astype(str), "|"), block.astype(str))
-
+    block = ((ts - ts.min()).dt.days // block_days).to_numpy().astype("int64")
     p = np.asarray(preds, dtype="float64")
-    sp = pd.Series(p, index=key)
-    grp = sp.groupby(level=0)
-    n = grp.transform("size").to_numpy()
-    tot = grp.transform("sum").to_numpy()
-    loo = np.where(n > 1, (tot - p) / np.maximum(n - 1, 1), p)
+    loo = np.mean([_loo_mean(p, ids, block) for ids in entity_ids.values()], axis=0)
     return (1.0 - w) * p + w * loo
 
 SEEDS = [0, 1, 2, 3, 4]
@@ -869,7 +881,7 @@ def main():
                       callbacks=[lgb.early_stopping(200, verbose=False), lgb.log_evaluation(period=0)])
     ph = probe.predict(X_h, num_iteration=probe.best_iteration)
     raw_ap = average_precision_score(y_h, ph)
-    bl_ap = average_precision_score(y_h, blocked_loo_blend(ph, hold["customer_id"].values, hold[TIME_COL]))
+    bl_ap = average_precision_score(y_h, blocked_loo_blend(ph, {e: hold[e].values for e in PROP_ENTITIES}, hold[TIME_COL]))
     rounds = int(round(probe.best_iteration * 1.1))
     print(f"held-out(Jul01-15) raw={raw_ap:.4f}  blended={bl_ap:.4f}  ({bl_ap-raw_ap:+.4f})  "
           f"rounds={rounds}", flush=True)
@@ -883,7 +895,7 @@ def main():
     ds = lgb.Dataset(X_full, label=y_full, categorical_feature=cc, free_raw_data=False)
     raw = np.mean([lgb.train(dict(P, seed=s, bagging_seed=s, feature_fraction_seed=s),
                              ds, num_boost_round=rounds).predict(X_test) for s in (0, 1, 2, 3, 4)], axis=0)
-    preds = blocked_loo_blend(raw, test_df["customer_id"].values, test_df[TIME_COL])
+    preds = blocked_loo_blend(raw, {e: test_df[e].values for e in PROP_ENTITIES}, test_df[TIME_COL])
 
     g = test_df.groupby("customer_id").size()
     print(f"\ntest groups: rows/cust mean={g.mean():.1f} singletons={(g==1).mean():.1%}; "
