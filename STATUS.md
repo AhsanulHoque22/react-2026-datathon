@@ -55,7 +55,8 @@ intent still reaches it. It moves **4.7% of test rows**.
 |---|---|---|
 | `CANDIDATE_final_v5_0.5322.csv` (LB 0.56492) | submitted | prior-only features + propagation post-process -- **arguable** |
 | sanzid champion (LB 0.56548, rank 1) | submitted | same shape -- **arguable** |
-| `CANDIDATE_C_nograph_0.5252.csv` | not submitted | **fully compliant fallback** |
+| **`CANDIDATE_v8c_compliant_0.5263.csv`** | not submitted | **best fully compliant** -- arm C + 90-day specialist blend |
+| `CANDIDATE_C_nograph_0.5252.csv` | not submitted | fully compliant, simpler |
 | `CANDIDATE_v7_forward_0.5380.csv` | **never submit** | forward-reading FEATURES -- indefensible |
 
 Full argument for a reviewer: [`docs/METHODOLOGY_DISCLOSURE.md`](docs/METHODOLOGY_DISCLOSURE.md).
@@ -523,3 +524,36 @@ Each of these produced a plausible-looking wrong answer before being caught:
 - **`astype("int64")/1e9`** assumed nanosecond resolution; pandas 2.x used
   microseconds, silently scaling the clock by 1000 so a 20-minute gap read as
   0.02. Caught by `scripts/test_blend.py` before it ever ran.
+
+## Final compliant candidate (v8c)
+
+`submissions/CANDIDATE_v8c_compliant_0.5263.csv`
+md5 `3566aa5919b65955ea30536b857eea46`
+
+```
+held-out(Jul01-15)  full=0.5252  spec90=0.5242  blend(w=0.4)=0.5263
+rounds: full=967, specialist=557   |   full train 731,942 rows, 90d 345,731
+```
+
+arm C's 197 strictly-prior features. Full-train model blended 60/40 with a
+90-day specialist, each early-stopped independently and averaged over 5 seeds.
+No forward features, no propagation, no context features. `assert_strictly_past()`
+runs on the feature list and again on the test matrix before writing.
+
+Verified: 262,648 rows, order matches sample, 0 NaN, range [0.00036, 0.99962].
+Correlation with sanzid's rank-1 champion is only 0.63 Spearman -- they are
+substantially different models, which is what makes them a sensible pair of
+selections rather than two versions of the same bet.
+
+### The compliant ceiling, measured
+
+| lever | effect on tail | included |
+|---|---|---|
+| 90-day specialist blend | +0.0012 | yes |
+| backward-rich features | +0.0008 | no -- measured after v8c was built |
+| teammate context features | -0.0053 | no, correctly excluded |
+| forward features | +0.0244 | **no -- violates the rule** |
+| propagation post-process | +0.0070 | **no -- reads rows after t** |
+
+Compliant best 0.5263 against v5's non-compliant 0.5322. **The cost of full
+compliance is about 0.006 local, roughly 0.012 on the leaderboard.**
