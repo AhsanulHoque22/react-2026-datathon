@@ -1243,7 +1243,12 @@ def main():
     WINDOWS = {"tail Jul01-15": ("2026-07-01", "2026-07-16"),
                "LONG May17-Jul16": ("2026-05-17", "2026-07-16"),
                "fold2-guard": ("2026-06-18", "2026-07-02")}
-    ARMS = {"A_base (arm C)": BASE, "B_+context": CTX, "C_+context+backward": ALL}
+    # base+backward WITHOUT context: the first run stacked backward on top of
+    # context and could not separate them, and context turned out to be net
+    # negative (-0.0053), so backward was being judged through that damage.
+    BWD_ONLY = BASE + [c for c in ALL if c not in CTX]
+    ARMS = {"A_base (arm C)": BASE, "B_+backward only": BWD_ONLY,
+            "C_+context+backward": ALL}
 
     res = {}
     for aname, cols in ARMS.items():
@@ -1266,7 +1271,7 @@ def main():
                                 callbacks=[lgb.early_stopping(200, verbose=False),
                                            lgb.log_evaluation(period=0)])
                 aps.append(average_precision_score(y_va, bst.predict(X_va, num_iteration=bst.best_iteration)))
-                if seed == 0 and wname.startswith("tail") and aname.startswith("C_"):
+                if seed == 0 and wname.startswith("tail") and aname.startswith(("B_", "C_")):
                     imp = pd.Series(bst.feature_importance("gain"), index=cols).sort_values(ascending=False)
                     tot = imp.sum()
                     hits = [(c, round(100 * imp[c] / tot, 2)) for c in imp.index[:25] if c in BWD]
