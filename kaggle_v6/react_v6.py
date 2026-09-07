@@ -799,6 +799,76 @@ def add_forward_rich_features(df: pd.DataFrame, entity_col: str, prefix: str,
     scatter(f"{prefix}_gap_fwd_vs_bwd", (nxt + 1.0) / (prev + 1.0))
     return pd.concat([df, pd.DataFrame(new, index=df.index)], axis=1)
 
+
+def add_location_and_category_context_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Location velocity, category/location-relative amounts, coarse crosses,
+    and smurfing ratios.
+
+    Adapted from the teammate branch `experiment/push-to-0.5400`. Reviewed
+    line-by-line for the organiser's strictly-before-t rule before adoption:
+    the location rollings use `closed="left"` so the current row is excluded,
+    the category and location means are `cumsum - own value` over `cumcount`,
+    the crosses are the row's own attributes, and the smurf/burst ratios are
+    built from the existing trailing (prior-only) windows. Nothing reads a row
+    at or after t."""
+    loc_filled = df["location"].fillna("__unknown__")
+    sub_loc = pd.DataFrame({"location": loc_filled, TIME_COL: df[TIME_COL],
+                            "amount_bdt": df["amount_bdt"]})
+    grouped_loc = sub_loc.groupby("location")
+    for h in (1, 24):
+        roll = grouped_loc.rolling(f"{h}h", on=TIME_COL, closed="left")["amount_bdt"]
+        cnt = roll.count().reset_index(level=0, drop=True).sort_index()
+        s = roll.sum().reset_index(level=0, drop=True).sort_index()
+        df[f"loc_cnt_{h}h"] = np.nan_to_num(cnt.values, nan=0.0)
+        df[f"loc_amtsum_{h}h"] = np.nan_to_num(s.values, nan=0.0)
+
+    cat_filled = df["merchant_category"].fillna("__unknown__")
+    cat_grp = df.groupby(cat_filled)["amount_bdt"]
+    cat_prior_cnt = cat_grp.cumcount().astype("float64")
+    cat_prior_mean = (cat_grp.cumsum() - df["amount_bdt"]) / cat_prior_cnt.replace(0, np.nan)
+    df["amt_vs_cat_mean_prior"] = df["amount_bdt"] / (cat_prior_mean + EPS)
+
+    loc_grp = df.groupby(loc_filled)["amount_bdt"]
+    loc_prior_cnt = loc_grp.cumcount().astype("float64")
+    loc_prior_mean = (loc_grp.cumsum() - df["amount_bdt"]) / loc_prior_cnt.replace(0, np.nan)
+    df["loc_amt_ratio"] = df["amount_bdt"] / (loc_prior_mean + EPS)
+
+    for pre in ("cust", "dev"):
+        if f"{pre}_cnt_24h" in df.columns and f"{pre}_amtsum_24h" in df.columns:
+            mean24 = df[f"{pre}_amtsum_24h"] / (df[f"{pre}_cnt_24h"] + EPS)
+            df[f"{pre}_amt_vs_24h_mean"] = df["amount_bdt"] / (mean24 + EPS)
+            df[f"{pre}_burst_accel"] = (df[f"{pre}_cnt_1h"] * 24.0) / (df[f"{pre}_cnt_24h"] + 1.0)
+        if f"{pre}_cnt_1h" in df.columns and f"{pre}_amtsum_1h" in df.columns:
+            df[f"{pre}_smurf_ratio_1h"] = (df[f"{pre}_cnt_1h"] + 1.0) / (df[f"{pre}_amtsum_1h"] + 10.0)
+
+    df["pay_x_dev"] = df["payment_method"].astype(str) + "_" + df["device_type"].astype(str)
+    df["cat_x_loc"] = df["merchant_category"].astype(str) + "_" + df["location"].astype(str)
+    df["txn_x_pay"] = df["transaction_type"].astype(str) + "_" + df["payment_method"].astype(str)
+    rows_so_far = np.arange(len(df), dtype="float64")
+    for col in ("pay_x_dev", "cat_x_loc", "txn_x_pay"):
+        filled = df[col].fillna("__unknown__")
+        df[f"{col}_freq_share_prior"] = filled.groupby(filled).cumcount().astype("float64") / np.maximum(rows_so_far, 1.0)
+    return df.copy()
+
+
+# Columns produced by the forward-looking feature builders. The organiser's
+# rule is explicit: "Every engineered feature for a transaction at time t may
+# only use information strictly before t", and the accompanying example allows
+# test-period rows only when they "occurred earlier than the row being scored".
+# Forward and symmetric windows read rows at or after t, so nothing here may
+# reach a submitted model.
+FORWARD_MARKERS = ("_fwd_", "_sym_", "_seconds_to_next", "_accel_", "_amt_vs_sym_",
+                   "_gap_fwd_vs_bwd")
+
+
+def assert_strictly_past(feature_cols) -> None:
+    """Fail loudly if any forward-looking column reached the feature matrix."""
+    bad = [c for c in feature_cols if any(m in c for m in FORWARD_MARKERS)]
+    assert not bad, (
+        "forward-looking features in a submitted model violate the organiser's "
+        f"strictly-before-t rule: {bad[:12]}{'...' if len(bad) > 12 else ''}"
+    )
+
 # ===================== src/model.py =====================
 CAT_COLS = ["merchant_category", "device_type", "location", "payment_method", "transaction_type"]
 # log_amount_bdt is a helper column for the log-space z-scores, not a model

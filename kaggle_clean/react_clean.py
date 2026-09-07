@@ -1101,18 +1101,19 @@ FINAL_PARAMS = dict(
 )
 
 
-# ====== how tight does the propagation window go, and how hard? ============
-# The block sweep ran monotone to its floor: 1h beat everything at every
-# weight, and the best weight (0.2) was the largest tested and still climbing.
-# Both edges of that grid are unexplored.
+# ============ COMPLIANT tournament: strictly-before-t only =================
+# The organiser's rule, verbatim: "Every engineered feature for a transaction
+# at time t may only use information strictly before t", with an example that
+# allows test-period rows only when they "occurred earlier than the row being
+# scored". Forward/symmetric windows and the +/-60min propagation blend both
+# read rows at or after t, so neither may appear in a submitted model.
 #
-# It also switches to a real SLIDING window. Fixed blocks are crude at this
-# scale -- two transactions ten minutes apart can land either side of a
-# boundary and never see each other -- and the tighter the window the more
-# that costs. Fixed 1h is kept as the control.
+# Everything here is prior-only, and assert_strictly_past() enforces it
+# mechanically rather than by inspection.
 #
-# Coverage collapses fast (a 1h block already touches only 3.7% of test
-# customer rows), so this must turn somewhere.
+# Arms combine what remains: our arm C base, the teammate branch's location /
+# category / cross / smurf context features (reviewed line-by-line and ported),
+# their dual-horizon full-train + 90-day blend, and top-160 pruning.
 def main():
     t0 = time.time()
     train = pd.read_csv(TRAIN_CSV, parse_dates=[TIME_COL])
@@ -1122,76 +1123,96 @@ def main():
     del train, test
     gc.collect()
     df = build_features(df)
-    feature_cols, cat_cols = get_feature_columns(df)
-    cols = [c for c in feature_cols if "component_size_prior" not in c]
-    cc = [c for c in cat_cols if c in cols]
+    leakage_assertions(df)
+    base_cols, cat_cols = get_feature_columns(df)
+    BASE = [c for c in base_cols if "component_size_prior" not in c]
+
+    df = add_location_and_category_context_features(df)
+    ctx_cols, ctx_cats = get_feature_columns(df)
+    CTX = [c for c in ctx_cols if "component_size_prior" not in c]
+    NEW = [c for c in CTX if c not in BASE]
+    assert_strictly_past(CTX)
+    print(f"base={len(BASE)}  +context={len(CTX)} (added {len(NEW)}) ({time.time()-t0:.0f}s)", flush=True)
+    print(f"  context cols: {NEW}", flush=True)
+
     labeled = df[~df["is_test"]]
     del df
     gc.collect()
-    print(f"featurized, {len(cols)} features ({time.time()-t0:.0f}s)", flush=True)
 
-    MINUTES = [5, 15, 30, 60, 120, 240]
-    WEIGHTS = [0.15, 0.2, 0.3, 0.4, 0.5]
-    WINDOWS = {"LONG May17-Jul16": ("2026-05-17", "2026-07-16"),
-               "LONG Apr01-Jun01": ("2026-04-01", "2026-06-01")}
+    FULL = dict(objective="binary", metric="None", verbosity=-1, learning_rate=0.02,
+                num_leaves=127, feature_fraction=0.85, bagging_fraction=0.85,
+                bagging_freq=1, min_data_in_leaf=50)
+    SPEC = dict(objective="binary", metric="None", verbosity=-1, learning_rate=0.02,
+                num_leaves=63, feature_fraction=0.75, bagging_fraction=0.85,
+                bagging_freq=1, min_data_in_leaf=100)
+
+    WINDOWS = {"tail Jul01-15": ("2026-07-01", "2026-07-16"),
+               "LONG May17-Jul16": ("2026-05-17", "2026-07-16"),
+               "fold2-guard": ("2026-06-18", "2026-07-02")}
+    FEATSETS = {"base (arm C)": BASE, "base+context": CTX}
+    SPEC_W = [0.0, 0.4, 0.52]
 
     res = {}
-    for wname, (s_, e_) in WINDOWS.items():
-        s_ts, e_ts = pd.Timestamp(s_), pd.Timestamp(e_)
-        tr = labeled.loc[labeled[TIME_COL] < s_ts]
-        va = labeled.loc[(labeled[TIME_COL] >= s_ts) & (labeled[TIME_COL] < e_ts)]
-        X_tr, y_tr = prepare_lgb_frame(tr, cols, cc), tr[LABEL_COL].astype(int)
-        X_va, y_va = prepare_lgb_frame(va, cols, cc), va[LABEL_COL].astype(int)
-        yv = y_va.values
-        ents = {e: va[e].values for e in ("customer_id", "device_id")}
-        acc = {(m, w): [] for m in MINUTES for w in WEIGHTS}
-        ctrl = {w: [] for w in WEIGHTS}
-        base = []
-        for seed in (0, 1, 2):
-            prm = dict(objective="binary", metric="None", verbosity=-1, learning_rate=0.02,
-                       num_leaves=127, feature_fraction=0.85, bagging_fraction=0.85,
-                       bagging_freq=1, min_data_in_leaf=50, seed=seed, bagging_seed=seed,
-                       feature_fraction_seed=seed)
-            ds_tr = lgb.Dataset(X_tr, label=y_tr, categorical_feature=cc, free_raw_data=False)
-            ds_va = lgb.Dataset(X_va, label=y_va, categorical_feature=cc, reference=ds_tr, free_raw_data=False)
-            bst = lgb.train(prm, ds_tr, num_boost_round=4000, valid_sets=[ds_va],
-                            feval=make_pr_auc_feval(y_va.values, seed=seed),
-                            callbacks=[lgb.early_stopping(200, verbose=False),
-                                       lgb.log_evaluation(period=0)])
-            p = bst.predict(X_va, num_iteration=bst.best_iteration)
-            base.append(average_precision_score(yv, p))
-            for m in MINUTES:
-                for w in WEIGHTS:
-                    acc[(m, w)].append(average_precision_score(
-                        yv, sliding_loo_blend(p, ents, va[TIME_COL], w=w, window_minutes=m)))
-            for w in WEIGHTS:
-                ctrl[w].append(average_precision_score(
-                    yv, blocked_loo_blend(p, ents, va[TIME_COL], w=w, block_hours=1)))
-        res[wname] = {"base": float(np.mean(base)),
-                      **{k: float(np.mean(v)) for k, v in acc.items()},
-                      **{("fixed1h", w): float(np.mean(v)) for w, v in ctrl.items()}}
-        print(f"\n  {wname}: base {np.mean(base):.4f} [{time.time()-t0:.0f}s]", flush=True)
-        del X_tr, X_va
-        gc.collect()
+    for fname, cols in FEATSETS.items():
+        assert_strictly_past(cols)
+        cc = [c for c in ctx_cats if c in cols]
+        res[fname] = {}
+        for wname, (s_, e_) in WINDOWS.items():
+            s_ts, e_ts = pd.Timestamp(s_), pd.Timestamp(e_)
+            tr = labeled.loc[labeled[TIME_COL] < s_ts]
+            tr90 = tr.loc[tr[TIME_COL] >= s_ts - pd.Timedelta(days=90)]
+            va = labeled.loc[(labeled[TIME_COL] >= s_ts) & (labeled[TIME_COL] < e_ts)]
+            X_tr, X_90 = prepare_lgb_frame(tr, cols, cc), prepare_lgb_frame(tr90, cols, cc)
+            X_va = prepare_lgb_frame(va, cols, cc)
+            y_tr, y_90 = tr[LABEL_COL].astype(int), tr90[LABEL_COL].astype(int)
+            y_va = va[LABEL_COL].astype(int); yv = y_va.values
+            acc = {w: [] for w in SPEC_W}
+            for seed in (0, 1, 2):
+                dsf = lgb.Dataset(X_tr, label=y_tr, categorical_feature=cc, free_raw_data=False)
+                dsv = lgb.Dataset(X_va, label=y_va, categorical_feature=cc, reference=dsf, free_raw_data=False)
+                bf = lgb.train(dict(FULL, seed=seed, bagging_seed=seed, feature_fraction_seed=seed),
+                               dsf, num_boost_round=4000, valid_sets=[dsv],
+                               feval=make_pr_auc_feval(y_va.values, seed=seed),
+                               callbacks=[lgb.early_stopping(200, verbose=False), lgb.log_evaluation(period=0)])
+                pf = bf.predict(X_va, num_iteration=bf.best_iteration)
+                ds9 = lgb.Dataset(X_90, label=y_90, categorical_feature=cc, free_raw_data=False)
+                dsv9 = lgb.Dataset(X_va, label=y_va, categorical_feature=cc, reference=ds9, free_raw_data=False)
+                bs = lgb.train(dict(SPEC, seed=seed, bagging_seed=seed, feature_fraction_seed=seed),
+                               ds9, num_boost_round=4000, valid_sets=[dsv9],
+                               feval=make_pr_auc_feval(y_va.values, seed=seed),
+                               callbacks=[lgb.early_stopping(200, verbose=False), lgb.log_evaluation(period=0)])
+                ps = bs.predict(X_va, num_iteration=bs.best_iteration)
+                for w in SPEC_W:
+                    acc[w].append(average_precision_score(yv, (1 - w) * pf + w * ps))
+                if seed == 0 and wname.startswith("tail") and fname == "base+context":
+                    imp = pd.Series(bf.feature_importance("gain"), index=cols).sort_values(ascending=False)
+                    tot = imp.sum()
+                    hits = [(c, round(100 * imp[c] / tot, 2)) for c in imp.index[:25] if c in NEW]
+                    print(f"      context features in top-25: {hits if hits else 'NONE'}", flush=True)
+            res[fname][wname] = {w: (float(np.mean(v)), float(np.std(v))) for w, v in acc.items()}
+            print(f"  {fname:14s} {wname:18s} " +
+                  " ".join(f"w{w}:{np.mean(acc[w]):.4f}" for w in SPEC_W) +
+                  f"  [{time.time()-t0:.0f}s]", flush=True)
+            del X_tr, X_90, X_va
+            gc.collect()
 
-    print("\n===== SLIDING window: mean LONG delta by +/-window and weight =====")
-    print(f"{'window':>9}" + "".join(f"{('w='+str(w)):>11}" for w in WEIGHTS))
+    print("\n========== COMPLIANT ARMS (strictly before t) ==========")
+    print(f"{'featureset':14s}{'spec w':>8}{'tail':>10}{'LONG':>10}{'guard':>10}")
     best = None
-    for m in MINUTES:
-        row = f"{m:>8}m"
-        for w in WEIGHTS:
-            d = np.mean([res[wn][(m, w)] - res[wn]["base"] for wn in WINDOWS])
-            row += f"{d:>+11.4f}"
-            if best is None or d > best[0]:
-                best = (d, m, w)
-        print(row)
-    row = f"{'fixed1h':>9}"
-    for w in WEIGHTS:
-        row += f"{np.mean([res[wn][('fixed1h', w)] - res[wn]['base'] for wn in WINDOWS]):>+11.4f}"
-    print(row + "   <- control")
-    d, m, w = best
-    print(f"\nbest sliding: +/-{m}min w={w} -> {d:+.4f}")
-    print("Adopt only if the ordering is monotone across weight columns.")
+    for fname in FEATSETS:
+        for w in SPEC_W:
+            tl = res[fname]["tail Jul01-15"][w][0]
+            lg = res[fname]["LONG May17-Jul16"][w][0]
+            gd = res[fname]["fold2-guard"][w][0]
+            print(f"{fname:14s}{w:>8}{tl:>10.4f}{lg:>10.4f}{gd:>10.4f}")
+            if best is None or tl > best[0]:
+                best = (tl, fname, w, lg, gd)
+    b0 = res["base (arm C)"]["tail Jul01-15"][0.0][0]
+    tl, fname, w, lg, gd = best
+    print(f"\narm C alone (our best compliant so far) tail = {b0:.4f}")
+    print(f"best compliant = {fname}, spec w={w}: tail {tl:.4f} ({tl-b0:+.4f})")
+    print("Reference points: our v5 tail 0.5322 -> LB 0.56492 used propagation and is")
+    print("NOT compliant. The compliant lineage is arm C 0.5252 -> LB unknown.")
 
 
 if __name__ == "__main__":
