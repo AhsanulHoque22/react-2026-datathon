@@ -1,51 +1,61 @@
 # REACT 2026 Datathon — Team Status Dashboard
 
-Last updated: **2026-09-07 10:50 Dhaka** · deadline **2026-09-07 23:59:59 Dhaka** (~13h left)
+Last updated: **2026-09-07 12:00 Dhaka** · deadline **2026-09-07 23:59:59 Dhaka** (~12h left)
 
 > Modeling plan and rationale: [`PLAN.md`](./PLAN.md) · Onboarding tasks: [`TEAM_TASKS.md`](./TEAM_TASKS.md)
 
 ---
 
-## 🔒 Current best — HOLD
+## 🏆 Current best — 1st place
 
 | | |
 |---|---|
-| **Public LB score** | **0.53948** |
-| **Position** | 6th of 13 |
-| **Submitted** | 2026-09-06 14:07 Dhaka |
-| **Artifact** | `submissions/BEST_0.53948_2329b1b.csv` (md5 `334ce114e8f761538871e691ce0227f4`) |
-| **Code** | commit `2329b1b`, git tag **`best-0.53948`** |
-| **Reproduce** | `git checkout best-0.53948 && python scripts/01_build_features.py && python scripts/04_train_final_and_submit.py` |
+| **Public LB score** | **0.56492** |
+| **Position** | **1 of 33** |
+| **Submitted** | 2026-09-07 11:31 Dhaka |
+| **Artifact** | `submissions/CANDIDATE_final_v5_0.5322.csv` (md5 `4bd4510b4ffb7b9b3f51909818e665f9`) |
+| **Code** | commit `d273067` |
 
-Exact configuration that produced it: 124-column feature set, LightGBM
-`lr=0.05, num_leaves=127→63, min_data_in_leaf=50, feature_fraction=0.85,
-bagging_fraction=0.85`, early-stopping patience 100, **no `scale_pos_weight`**,
-predictions averaged over 5 seeds, rounds picked from a Jul 1–15 held-out probe.
+Arm C (lr=0.02, leaves=127, no `scale_pos_weight`, Phase-3 features, no graph
+features, 967 rounds, 5 seeds) **plus entity propagation**: a leave-one-out
+blend over customer and device neighbours inside a sliding +/-60min window at
+w=0.50.
 
-> ⚠️ `HEAD` has moved past this (now `lr=0.02, leaves=127`, patience 200). The
-> tag is the recovery point. Nothing gets submitted without explicit approval.
+Held-out Jul01-15: raw 0.5252 -> blended 0.5322.
 
-## Leaderboard
+### Leaderboard
 
 | # | Team | Score |
 |---|---|---|
-| 1 | Eldians | 0.55283 |
-| 2 | AL_Masaar | 0.55094 |
-| 3 | DataX | 0.54896 |
-| 4 | PHANTOM TROUPE | 0.54707 |
-| 5 | Paradox | 0.54157 |
-| **6** | **Overfit & Overcaffeinated** | **0.53948** |
-| 7 | Hotath Atonko | 0.52932 |
-| 8 | Sabr | 0.52748 |
-| 9 | Scuba Scubaa | 0.52130 |
-| 10 | Team Optima | 0.51967 |
+| **1** | **Overfit & Overcaffeinated** | **0.56492** |
+| 2 | Error404 | 0.56479 |
+| 3 | AL_Masaar | 0.56041 |
+| 4 | COiN Lab | 0.55988 |
+| 5 | Eldians | 0.55941 |
 
-Gap to 1st: **0.0134**. The whole field sits in 0.497–0.553, so this is a
-tight race where ~0.01 is worth several places.
+**The margin over 2nd is 0.00013.** That is not a lead, it is a tie, and the
+public board is only 60% of the test set. Do not treat this as safe.
+
+## THE EXCHANGE RATE (the most important number here)
+
+Two calibration points now exist:
+
+| local (Jul01-15 tail) | leaderboard |
+|---|---|
+| 0.5204 | 0.53948 |
+| 0.5322 (+0.0118) | 0.56492 (+0.0254) |
+
+**Local gains amplify ~2.2x on the leaderboard.** Every estimate made before
+this submission assumed 1:1 pass-through and was therefore too conservative --
+the prediction was ~0.559 and the result was 0.56492.
+
+**Consequence: the +0.004 acceptance bar was set under the wrong assumption.**
+Calibrated correctly it should be about **+0.002 local**. Several results
+rejected today sit in that reopened band -- the stacker at +0.0029 above all.
 
 ## Submission budget
 
-**0 remaining today.** Kaggle resets at **00:00 UTC = 06:00 Dhaka**, not local
+**4 remaining today** (v5 spent one). Kaggle resets at **00:00 UTC = 06:00 Dhaka**, not local
 midnight (our 14:07 Dhaka submission is logged 08:07 UTC). Next 5 slots open
 **06:00 Sep 7**, leaving ~18h of competition after that. Today's 5 went:
 baseline, full pipeline, improved features, the class-weight fix, plus one
@@ -437,3 +447,48 @@ Nobody found a magic signal.
 | **Arm C + propagation (final)** | -- | **+0.0150** |
 
 Total local gain over what is on the leaderboard: **~+0.020**.
+
+## Propagation is closed, from three directions
+
+The winning lever, searched until it stopped giving:
+
+| probe | what it varied | verdict |
+|---|---|---|
+| `psweep` | entity scheme x block size x weight | cust+dev beats either alone; tighter blocks win monotonically |
+| `sub` / `tight` | block size down to 1h, then sliding +/-5..240min | +/-60min is a true peak, lower on both sides |
+| `weight` | blend weight 0.4-0.9 | plateau at 0.5-0.6, falls by 0.9 -- optimum bracketed, not at an edge |
+| `hop` | asymmetric weights, max-blend, 2nd diffusion pass, 2-hop cust->dev->cust, merchant | every variant within +/-0.0006. Equal weighting was already right; 2-hop adds nothing; merchant is dead even tight |
+| `attn` | time-decay, inverse-distance, amount-similarity weighting | every kernel within +/-0.0002 of a flat average |
+
+**On the attention question specifically:** weighting neighbours cannot help
+here because the median neighbourhood has ~1 sibling. A weighted mean over one
+element is an unweighted mean over one element. A learned attention layer would
+have had strictly more ways to fail against the same zero headroom -- this is
+now measured, not argued.
+
+## Everything that did not work
+
+| lever | result | why |
+|---|---|---|
+| Target encoding | +0.0031 | under the (old) bar, loses the hardest window, carries reproducibility-review exposure |
+| Drift normalisation | +0.0001 | most flagged drift is deterministic accumulation; percentiles strip the absolute level, which carries signal |
+| Ranking objectives | -0.009 | PR-AUC scores one GLOBAL ranking; lambdarank optimises NDCG within group |
+| Self-training (soft / hard) | +0.0023 / -0.0101 | small, and the only idea that trains on test rows |
+| Drop dead-regime features | +0.0001 / -0.0010 | `cust_amt_robust_z` fell 0.41 -> 0.24 univariate AP but 0.24 still beats the best device feature's 0.172 |
+| DART, L1/L2, max_bin, extra_trees, GOSS | -0.0039..+0.0006 | the defaults were already right |
+| Learned stacking | +0.0029 | **reopened** -- see the exchange rate above |
+
+## Bugs found and fixed today
+
+Each of these produced a plausible-looking wrong answer before being caught:
+
+- **Clustering diagnostic** divided fraud-fraud pairs by `n(n-1)`, printing the
+  *joint* probability as the conditional. Real 2.6x clustering read as "lift
+  0.0x" and nearly got propagation -- the winning idea -- discarded outright.
+- **`.days` on a timedelta Series** (needs `.dt.days`), crashing the candidate
+  after 3 minutes of featurisation.
+- **Pseudo-label objective**: `binary` counts any label > 0 as a positive, so
+  soft labels of ~0.017 were all read as frauds and AP "collapsed" 0.73 -> 0.03.
+- **`astype("int64")/1e9`** assumed nanosecond resolution; pandas 2.x used
+  microseconds, silently scaling the clock by 1000 so a 20-minute gap read as
+  0.02. Caught by `scripts/test_blend.py` before it ever ran.
