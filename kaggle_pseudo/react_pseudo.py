@@ -908,9 +908,16 @@ def main():
             w_both = np.concatenate([np.ones(len(y_tr)), np.full(len(pseudo), wt)])
             ds_b = lgb.Dataset(X_both, label=y_both, weight=w_both,
                                categorical_feature=cc, free_raw_data=False)
+            # objective="binary" counts ANY label > 0 as a positive, so soft
+            # labels of ~0.017 would all be read as frauds. cross_entropy is
+            # the objective that accepts probabilistic targets in [0, 1].
+            if kind == "soft":
+                prm2 = dict(prm, objective="cross_entropy")
+            else:
+                prm2 = prm
             # rounds fixed to the baseline's: early stopping here would tune on
             # the very rows being scored, which is the leak this design avoids.
-            bst2 = lgb.train(prm, ds_b, num_boost_round=rounds)
+            bst2 = lgb.train(prm2, ds_b, num_boost_round=rounds)
             ap = average_precision_score(yv, bst2.predict(X_va))
             arms[name].append(ap)
             print(f"      {name:14s} AP {ap:.4f} ({ap-base_ap[-1]:+.4f})  "
