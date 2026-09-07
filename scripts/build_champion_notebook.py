@@ -407,7 +407,7 @@ SELECTED_FEATURES = {repr(SELECTED_FEATURES)}
 
 CAT_COLS = [
     "merchant_category", "device_type", "location", "payment_method", "transaction_type",
-    "hour_of_day", "day_of_week", "is_night", "pay_x_dev", "cat_x_loc", "txn_x_pay",
+    "pay_x_dev", "cat_x_loc", "txn_x_pay",
 ]
 
 def prepare_lgb_frame(frame: pd.DataFrame, feature_cols: list[str], cat_cols: list[str]) -> pd.DataFrame:
