@@ -8,8 +8,9 @@ data/processed/*
 !data/processed/.gitkeep
 submissions/*.csv
 !submissions/.gitkeep
+!submissions/CANDIDATE_tree_neural_propagated_0.5359.csv
 
 .env
 kaggle.json
 data/*.csv
-catboost_info/submission.csv
+catboost_info/
