@@ -954,15 +954,19 @@ FINAL_PARAMS = dict(
 )
 
 
-# =================== FINAL: aggregate everything, score locally =============
-# Combines every validated fix (no class weighting, swept lr=0.02/leaves=127,
-# 5-seed averaging, stationary encodings, self-relative features) with the new
-# Phase 3 recent-window family, and scores across MULTIPLE recent windows
-# rather than repeatedly against fold 3's 804 positives.
+# ====== give the model the forward-looking signal directly =================
+# Every feature in this pipeline is strictly PRIOR -- the right default when a
+# careless aggregate can leak the label. But propagation works precisely
+# because it looks FORWARD: a +/-60min neighbourhood contains a customer's
+# LATER transactions. That is legal (it touches no labels, and the whole test
+# set is available at once) and it is worth +0.0150 bolted on after the fact.
 #
-# Acceptance rule (from FOLD3_IMPROVEMENT_PLAN.md): a candidate wins only if
-# the recent-window mean improves by >=0.004, at least two windows improve,
-# no window drops more than 0.003, and it holds across 3 seeds.
+# So why bolt it on? Handing the model forward and symmetric window counts,
+# sums and time-to-next lets a tree combine them with everything else instead
+# of receiving one fixed blend at the end.
+#
+# The question this answers is whether they ADD to propagation or merely
+# duplicate it, so the propagated arms are run too.
 def main():
     t0 = time.time()
     train = pd.read_csv(TRAIN_CSV, parse_dates=[TIME_COL])
@@ -973,134 +977,83 @@ def main():
     gc.collect()
     df = build_features(df)
     leakage_assertions(df)
+    for col, pre in (("customer_id", "cust"), ("device_id", "dev"), ("merchant_id", "merch")):
+        df = add_forward_window_features(df, col, pre, windows_min=(60, 1440))
     feature_cols, cat_cols = get_feature_columns(df)
-    print(f"featurized={df.shape}, {len(feature_cols)} features ({time.time()-t0:.0f}s)", flush=True)
-
-    NEW = [c for c in feature_cols if any(k in c for k in (
-        "_amt_vs_recent_mean_", "_amt_vs_recent_max_", "_fresh_",
-        "_cnt_5m", "_cnt_15m", "_cnt_30m", "_cnt_3h", "_cnt_12h",
-        "_amtsum_5m", "_amtsum_15m", "_amtsum_30m", "_amtsum_3h", "_amtsum_12h",
-        "_gap_accel", "_velocity_ratio_", "_amt_vs_prior_max", "_is_record_amt",
-        "_hour_bucket_share", "_new_hour_bucket"))]
-    GRAPH = [c for c in feature_cols if "component_size_prior" in c]
-    OLD = [c for c in feature_cols if c not in NEW]
-    print(f"{len(NEW)} new / {len(OLD)} old / {len(GRAPH)} graph", flush=True)
+    ALL = [c for c in feature_cols if "component_size_prior" not in c]
+    FWDC = [c for c in ALL if "_fwd_" in c or "_sym_" in c or c.endswith("_seconds_to_next")]
+    BASE = [c for c in ALL if c not in FWDC]
+    print(f"base={len(BASE)}  forward={len(FWDC)} ({time.time()-t0:.0f}s)", flush=True)
+    print(f"  forward cols: {FWDC}", flush=True)
 
     labeled = df[~df["is_test"]]
-    test_df = df[df["is_test"]]
-    frame_sorted = bool(df[TIME_COL].is_monotonic_increasing)
     del df
     gc.collect()
 
-    WINDOWS = {
-        "Jun25-Jul02": ("2026-06-25", "2026-07-02"),
-        "Jul02-Jul08": ("2026-07-02", "2026-07-08"),
-        "Jul08-Jul16": ("2026-07-08", "2026-07-16"),
-        "fold2-guard": ("2026-06-18", "2026-07-02"),
-    }
+    WINDOWS = {"LONG May17-Jul16": ("2026-05-17", "2026-07-16"),
+               "LONG Apr01-Jun01": ("2026-04-01", "2026-06-01"),
+               "fold2-guard": ("2026-06-18", "2026-07-02")}
+    ARMS = {"A_base": BASE, "B_base+forward": ALL}
 
-    ARMS = {
-        "A_prev_best(lr.05/63,old feats)": (OLD, dict(learning_rate=0.05, num_leaves=63)),
-        "B_new_feats(lr.02/127)":          (feature_cols, dict(learning_rate=0.02, num_leaves=127)),
-        "C_B_minus_graph":                 ([c for c in feature_cols if c not in GRAPH],
-                                            dict(learning_rate=0.02, num_leaves=127)),
-    }
-
-    results = {}
-    for arm, (cols, cfg) in ARMS.items():
+    res = {}
+    for arm, cols in ARMS.items():
         cc = [c for c in cat_cols if c in cols]
-        results[arm] = {}
+        res[arm] = {}
         for wname, (s_, e_) in WINDOWS.items():
             s_ts, e_ts = pd.Timestamp(s_), pd.Timestamp(e_)
             tr = labeled.loc[labeled[TIME_COL] < s_ts]
             va = labeled.loc[(labeled[TIME_COL] >= s_ts) & (labeled[TIME_COL] < e_ts)]
             X_tr, y_tr = prepare_lgb_frame(tr, cols, cc), tr[LABEL_COL].astype(int)
             X_va, y_va = prepare_lgb_frame(va, cols, cc), va[LABEL_COL].astype(int)
-            aps = []
+            yv = y_va.values
+            ents = {e: va[e].values for e in ("customer_id", "device_id")}
+            raw_aps, prop_aps = [], []
             for seed in (0, 1, 2):
-                params = dict(objective="binary", metric="None", verbosity=-1,
-                              feature_fraction=0.85, bagging_fraction=0.85, bagging_freq=1,
-                              min_data_in_leaf=50, seed=seed, bagging_seed=seed,
-                              feature_fraction_seed=seed, **cfg)
+                prm = dict(objective="binary", metric="None", verbosity=-1, learning_rate=0.02,
+                           num_leaves=127, feature_fraction=0.85, bagging_fraction=0.85,
+                           bagging_freq=1, min_data_in_leaf=50, seed=seed, bagging_seed=seed,
+                           feature_fraction_seed=seed)
                 ds_tr = lgb.Dataset(X_tr, label=y_tr, categorical_feature=cc, free_raw_data=False)
-                ds_va = lgb.Dataset(X_va, label=y_va, categorical_feature=cc, reference=ds_tr, free_raw_data=False)
-                bst = lgb.train(params, ds_tr, num_boost_round=4000, valid_sets=[ds_va],
+                ds_va = lgb.Dataset(X_va, label=y_va, categorical_feature=cc,
+                                    reference=ds_tr, free_raw_data=False)
+                bst = lgb.train(prm, ds_tr, num_boost_round=4000, valid_sets=[ds_va],
                                 feval=make_pr_auc_feval(y_va.values, seed=seed),
                                 callbacks=[lgb.early_stopping(200, verbose=False),
                                            lgb.log_evaluation(period=0)])
-                aps.append(average_precision_score(y_va, bst.predict(X_va, num_iteration=bst.best_iteration)))
-            results[arm][wname] = (float(np.mean(aps)), float(np.std(aps)))
-            print(f"  {arm:34s} {wname:12s} n_fraud={int(y_va.sum()):4d} "
-                  f"{np.mean(aps):.4f} +/- {np.std(aps):.4f}  [{time.time()-t0:.0f}s]", flush=True)
+                p = bst.predict(X_va, num_iteration=bst.best_iteration)
+                raw_aps.append(average_precision_score(yv, p))
+                prop_aps.append(average_precision_score(
+                    yv, sliding_loo_blend(p, ents, va[TIME_COL], w=0.5, window_minutes=60)))
+                if seed == 0 and wname.startswith("LONG May") and arm == "B_base+forward":
+                    imp = pd.Series(bst.feature_importance("gain"), index=cols).sort_values(ascending=False)
+                    tot = imp.sum()
+                    fw = [(c, 100 * imp[c] / tot) for c in imp.index[:20] if c in FWDC]
+                    print(f"    forward features in top-20 by gain: "
+                          f"{[(c, round(v,2)) for c, v in fw] if fw else 'NONE'}", flush=True)
+            res[arm][wname] = (float(np.mean(raw_aps)), float(np.mean(prop_aps)))
+            print(f"  {arm:16s} {wname:18s} raw {np.mean(raw_aps):.4f}  "
+                  f"+prop {np.mean(prop_aps):.4f}  [{time.time()-t0:.0f}s]", flush=True)
             del X_tr, X_va
             gc.collect()
 
-    print("\n================= FINAL LOCAL SCORES =================")
-    recent = [w for w in WINDOWS if w != "fold2-guard"]
-    hdr = f"{'arm':36s}" + "".join(f"{w:>16s}" for w in WINDOWS) + f"{'RECENT MEAN':>14s}"
-    print(hdr)
+    LONG = [w for w in WINDOWS if w.startswith("LONG")]
+    print("\n========== FORWARD-LOOKING FEATURES ==========")
+    print(f"{'arm':18s}{'raw LONG':>12}{'+prop LONG':>13}{'guard raw':>12}{'guard+prop':>12}")
     for arm in ARMS:
-        row = f"{arm:36s}"
-        for w in WINDOWS:
-            m, sd = results[arm][w]
-            row += f"{m:>10.4f}+-{sd:.3f}"
-        rm = np.mean([results[arm][w][0] for w in recent])
-        row += f"{rm:>14.4f}"
-        print(row)
-
-    base = np.mean([results["A_prev_best(lr.05/63,old feats)"][w][0] for w in recent])
-    for arm in ["B_new_feats(lr.02/127)", "C_B_minus_graph"]:
-        rm = np.mean([results[arm][w][0] for w in recent])
-        improved = sum(results[arm][w][0] > results["A_prev_best(lr.05/63,old feats)"][w][0] for w in recent)
-        worst = min(results[arm][w][0] - results["A_prev_best(lr.05/63,old feats)"][w][0] for w in recent)
-        verdict = ("ACCEPT" if (rm - base) >= 0.004 and improved >= 2 and worst >= -0.003
-                   else "reject (does not clear the acceptance rule)")
-        print(f"\n{arm}: recent-mean {rm:.4f} vs {base:.4f} (delta {rm-base:+.4f}), "
-              f"{improved}/{len(recent)} windows improved, worst delta {worst:+.4f} -> {verdict}")
-
-    # Train the best-by-recent-mean arm on all of train and write a candidate.
-    best_arm = max(ARMS, key=lambda a: np.mean([results[a][w][0] for w in recent]))
-    print(f"\nBest arm: {best_arm} -- training final candidate", flush=True)
-    cols, cfg = ARMS[best_arm]
-    cc = [c for c in cat_cols if c in cols]
-    hold_start = pd.Timestamp("2026-07-01")
-    fit = labeled.loc[labeled[TIME_COL] < hold_start]
-    hold = labeled.loc[labeled[TIME_COL] >= hold_start]
-    X_f, y_f = prepare_lgb_frame(fit, cols, cc), fit[LABEL_COL].astype(int)
-    X_h, y_h = prepare_lgb_frame(hold, cols, cc), hold[LABEL_COL].astype(int)
-    base_params = dict(objective="binary", metric="None", verbosity=-1,
-                       feature_fraction=0.85, bagging_fraction=0.85, bagging_freq=1,
-                       min_data_in_leaf=50, **cfg)
-    probe = lgb.train(dict(base_params, seed=0, bagging_seed=0, feature_fraction_seed=0),
-                      lgb.Dataset(X_f, label=y_f, categorical_feature=cc, free_raw_data=False),
-                      num_boost_round=4000,
-                      valid_sets=[lgb.Dataset(X_h, label=y_h, categorical_feature=cc, free_raw_data=False)],
-                      feval=make_pr_auc_feval(y_h.values, seed=0),
-                      callbacks=[lgb.early_stopping(200, verbose=False), lgb.log_evaluation(period=0)])
-    rounds = int(round(probe.best_iteration * 1.1))
-    print(f"held-out(Jul01-15)={average_precision_score(y_h, probe.predict(X_h, num_iteration=probe.best_iteration)):.4f} "
-          f"rounds={rounds}", flush=True)
-    del X_f, X_h, probe
-    gc.collect()
-
-    X_full, y_full = prepare_lgb_frame(labeled, cols, cc), labeled[LABEL_COL].astype(int)
-    X_test = prepare_lgb_frame(test_df, cols, cc)
-    ids = test_df["transaction_id"].values
-    ds = lgb.Dataset(X_full, label=y_full, categorical_feature=cc, free_raw_data=False)
-    preds = np.mean([lgb.train(dict(base_params, seed=s, bagging_seed=s, feature_fraction_seed=s),
-                               ds, num_boost_round=rounds).predict(X_test) for s in (0, 1, 2, 3, 4)], axis=0)
-
-    assert frame_sorted and LABEL_COL not in X_test.columns
-    for c in ID_COLS:
-        assert c not in X_test.columns
-    assert np.all((preds >= 0) & (preds <= 1)) and not np.isnan(preds).any()
-    sample = pd.read_csv(SAMPLE_SUBMISSION_CSV)
-    sub = pd.DataFrame({"transaction_id": ids, "fraud": preds})
-    sub = sub.set_index("transaction_id").loc[sample["transaction_id"]].reset_index()
-    assert list(sub["transaction_id"]) == list(sample["transaction_id"])
-    assert (sub["fraud"] != sub["fraud"].round().astype(int)).any()
-    sub.to_csv(OUT_DIR / "submission.csv", index=False)
-    print(f"\nWrote candidate submission.csv from {best_arm} ({time.time()-t0:.0f}s)")
+        r = np.mean([res[arm][w][0] for w in LONG])
+        pp = np.mean([res[arm][w][1] for w in LONG])
+        print(f"{arm:18s}{r:>12.4f}{pp:>13.4f}"
+              f"{res[arm]['fold2-guard'][0]:>12.4f}{res[arm]['fold2-guard'][1]:>12.4f}")
+    ar = np.mean([res["A_base"][w][0] for w in LONG])
+    ap_ = np.mean([res["A_base"][w][1] for w in LONG])
+    br = np.mean([res["B_base+forward"][w][0] for w in LONG])
+    bp = np.mean([res["B_base+forward"][w][1] for w in LONG])
+    print(f"\nforward features, no propagation : {br-ar:+.4f}")
+    print(f"forward features, with propagation: {bp-ap_:+.4f}")
+    print(f"propagation on base               : {ap_-ar:+.4f}")
+    print(f"propagation on base+forward       : {bp-br:+.4f}")
+    print("\nIf propagation's gain SHRINKS once the forward features are in, they")
+    print("were carrying the same signal. If both hold, they are complementary.")
 
 
 if __name__ == "__main__":
