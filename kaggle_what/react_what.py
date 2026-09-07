@@ -778,17 +778,23 @@ def precision_recall_at_k(y_true, y_score, k_frac):
 # entity -- P(sibling fraud|fraud) is 3.87x the base rate for devices and
 # 2.63x for customers -- and a per-row model cannot express that.
 #
-# Swept over 4 schemes x 4 block sizes x 5 weights on 60-day windows with
-# test-like group sizes. customer+device at a 3-day block, w=0.075, gives
-# +0.0073 (worst window +0.0068, std 0.0007) against +0.0049 for the
-# customer-only 7-day version shipped first.
+# Swept over schemes x block sizes x weights on 60-day windows with test-like
+# group sizes. customer+device at a 24-hour block, w=0.10, gives +0.0091 on
+# those windows against +0.0049 for the customer-only 7-day version shipped
+# first.
 #
-# Two things the sweep settled. Device works, but only blocked: unblocked it
-# pools 28 rows spanning weeks and loses. And tighter blocks win monotonically
-# (3d > 7d > 14d > 30d) for every scheme -- a sibling a month away is not
-# evidence about this transaction.
-PROP_W = 0.075
-PROP_BLOCK_DAYS = 3
+# The block size is the whole story. Every weight column produced the same
+# monotone ordering 1d > 2d > 3d > 4d > 5d > 7d > 14d > 30d -- thirty cells,
+# no inversions. Any single pairwise gap sits inside the 0.0020 seed noise, but
+# an ordering that consistent across independent columns is not noise. It wins
+# while touching FEWER rows (29% of test customers at 1d vs 51% at 3d): fewer
+# siblings, but the right ones. A transaction a month away is not evidence
+# about this one.
+#
+# Device works, but only blocked. Unblocked it pools 28 rows spanning weeks and
+# loses, which is why it was wrongly written off at first.
+PROP_W = 0.10
+PROP_BLOCK_HOURS = 24
 PROP_ENTITIES = ("customer_id", "device_id")
 
 
@@ -802,7 +808,7 @@ def _loo_mean(p, ids, block):
 
 
 def blocked_loo_blend(preds, entity_ids, timestamps, w: float = PROP_W,
-                      block_days: int = PROP_BLOCK_DAYS):
+                      block_hours: int = PROP_BLOCK_HOURS):
     """Blend preds with the mean per-entity leave-one-out score inside each
     time block.
 
@@ -815,7 +821,10 @@ def blocked_loo_blend(preds, entity_ids, timestamps, w: float = PROP_W,
     ts = pd.to_datetime(pd.Series(np.asarray(timestamps)).reset_index(drop=True))
     # .dt.days, not .days: subtracting two datetime Series gives a timedelta
     # SERIES, whose day component lives under the .dt accessor.
-    block = ((ts - ts.min()).dt.days // block_days).to_numpy().astype("int64")
+    # hours, not days: sub-day blocks were worth testing and the day case is
+    # just block_hours=24.
+    elapsed_h = (ts - ts.min()).dt.total_seconds().to_numpy() / 3600.0
+    block = (elapsed_h // block_hours).astype("int64")
     p = np.asarray(preds, dtype="float64")
     loo = np.mean([_loo_mean(p, ids, block) for ids in entity_ids.values()], axis=0)
     return (1.0 - w) * p + w * loo

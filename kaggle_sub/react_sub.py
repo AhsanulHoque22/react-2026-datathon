@@ -837,17 +837,12 @@ FINAL_PARAMS = dict(
 )
 
 
-# ====== the hyperparameter dimensions we never opened ======================
-# Stage 1 swept learning_rate x num_leaves. Stage 2 swept min_data_in_leaf x
-# feature_fraction, came back flat, and the search was closed as "exhausted".
-# That conclusion covered two planes of a six-dimensional space. Regularisation
-# (lambda_l1/l2), binning (max_bin), split gating (min_gain_to_split), the
-# randomised-split variant (extra_trees) and the boosting algorithm itself
-# (DART, GOSS) have never been moved off their defaults.
-#
-# DART in particular is not a tweak -- it drops trees during boosting, which
-# changes what the ensemble converges to, and on noisy tabular targets it
-# regularly beats plain GBDT by more than a leaf-count sweep ever will.
+# ====== does the block trend keep going below 24 hours? ====================
+# Every weight column ordered 1d > 2d > 3d > 4d > 5d > 7d with no inversions,
+# so the optimum may be sub-day. There is a floor to this: each halving of the
+# block roughly halves the share of rows that have any sibling at all, and once
+# coverage collapses the blend becomes a no-op. This finds where the trend
+# turns.
 def main():
     t0 = time.time()
     train = pd.read_csv(TRAIN_CSV, parse_dates=[TIME_COL])
@@ -861,79 +856,87 @@ def main():
     cols = [c for c in feature_cols if "component_size_prior" not in c]
     cc = [c for c in cat_cols if c in cols]
     labeled = df[~df["is_test"]]
+    test_df = df[df["is_test"]]
     del df
     gc.collect()
     print(f"featurized, {len(cols)} features ({time.time()-t0:.0f}s)", flush=True)
 
-    s_ts, e_ts = pd.Timestamp("2026-07-01"), pd.Timestamp("2026-07-16")
-    tr = labeled.loc[labeled[TIME_COL] < s_ts]
-    va = labeled.loc[(labeled[TIME_COL] >= s_ts) & (labeled[TIME_COL] < e_ts)]
-    X_tr, y_tr = prepare_lgb_frame(tr, cols, cc), tr[LABEL_COL].astype(int)
-    X_va, y_va = prepare_lgb_frame(va, cols, cc), va[LABEL_COL].astype(int)
-    print(f"tail(Jul01-15): train {len(tr)} / valid {len(va)}, {int(y_va.sum())} frauds\n", flush=True)
+    HOURS = [1, 3, 6, 12, 24, 48]
+    th = (test_df[TIME_COL] - test_df[TIME_COL].min()).dt.total_seconds().to_numpy() / 3600.0
+    print("\ntest-set coverage (share of rows with >=1 sibling in block):")
+    for h in HOURS:
+        blk = (th // h).astype("int64")
+        cov = []
+        for e in ("customer_id", "device_id"):
+            k = np.char.add(np.char.add(test_df[e].astype(str).to_numpy(), "|"), blk.astype(str))
+            cov.append(float((pd.Series(k).groupby(k).transform("size").to_numpy() > 1).mean()))
+        print(f"   {h:>3}h  customer {cov[0]:.1%}   device {cov[1]:.1%}")
 
-    BASE = dict(objective="binary", metric="None", verbosity=-1, learning_rate=0.02,
-                num_leaves=127, feature_fraction=0.85, bagging_fraction=0.85,
-                bagging_freq=1, min_data_in_leaf=50)
+    WINDOWS = {"LONG May17-Jul16": ("2026-05-17", "2026-07-16"),
+               "LONG Apr01-Jun01": ("2026-04-01", "2026-06-01")}
+    WEIGHTS = [0.05, 0.10, 0.15, 0.20]
 
-    CONFIGS = [
-        ("baseline",              {}),
-        ("l2=1",                  dict(lambda_l2=1.0)),
-        ("l2=10",                 dict(lambda_l2=10.0)),
-        ("l2=50",                 dict(lambda_l2=50.0)),
-        ("l1=1",                  dict(lambda_l1=1.0)),
-        ("l1=5+l2=10",            dict(lambda_l1=5.0, lambda_l2=10.0)),
-        ("max_bin=511",           dict(max_bin=511)),
-        ("max_bin=127",           dict(max_bin=127)),
-        ("min_gain=0.05",         dict(min_gain_to_split=0.05)),
-        ("extra_trees",           dict(extra_trees=True)),
-        ("goss",                  dict(boosting="goss", bagging_fraction=1.0, bagging_freq=0)),
-        ("dart dr=0.1",           dict(boosting="dart", drop_rate=0.1, skip_drop=0.5)),
-        ("lr=0.01",               dict(learning_rate=0.01)),
-    ]
+    def loo_for(p, ids, block):
+        key = np.char.add(np.char.add(ids.astype(str), "|"), block.astype(str))
+        sp = pd.Series(p, index=key)
+        g = sp.groupby(level=0)
+        n = g.transform("size").to_numpy()
+        tot = g.transform("sum").to_numpy()
+        return np.where(n > 1, (tot - p) / np.maximum(n - 1, 1), p)
 
-    rows = []
-    for name, over in CONFIGS:
-        aps, iters = [], []
-        for seed in (0, 1):
-            prm = dict(BASE, seed=seed, bagging_seed=seed, feature_fraction_seed=seed,
-                       drop_seed=seed, **over)
+    results = {}
+    for wname, (s_, e_) in WINDOWS.items():
+        s_ts, e_ts = pd.Timestamp(s_), pd.Timestamp(e_)
+        tr = labeled.loc[labeled[TIME_COL] < s_ts]
+        va = labeled.loc[(labeled[TIME_COL] >= s_ts) & (labeled[TIME_COL] < e_ts)]
+        X_tr, y_tr = prepare_lgb_frame(tr, cols, cc), tr[LABEL_COL].astype(int)
+        X_va, y_va = prepare_lgb_frame(va, cols, cc), va[LABEL_COL].astype(int)
+        yv = y_va.values
+        hrs = (va[TIME_COL] - va[TIME_COL].min()).dt.total_seconds().to_numpy() / 3600.0
+        cid = va["customer_id"].astype(str).to_numpy()
+        did = va["device_id"].astype(str).to_numpy()
+        acc = {(h, w): [] for h in HOURS for w in WEIGHTS}
+        base = []
+        for seed in (0, 1, 2):
+            prm = dict(objective="binary", metric="None", verbosity=-1, learning_rate=0.02,
+                       num_leaves=127, feature_fraction=0.85, bagging_fraction=0.85,
+                       bagging_freq=1, min_data_in_leaf=50, seed=seed, bagging_seed=seed,
+                       feature_fraction_seed=seed)
             ds_tr = lgb.Dataset(X_tr, label=y_tr, categorical_feature=cc, free_raw_data=False)
-            ds_va = lgb.Dataset(X_va, label=y_va, categorical_feature=cc,
-                                reference=ds_tr, free_raw_data=False)
-            # DART ignores early stopping (dropped trees make the curve
-            # non-monotonic), so it gets a fixed budget instead.
-            if over.get("boosting") == "dart":
-                bst = lgb.train(prm, ds_tr, num_boost_round=1200,
-                                valid_sets=[ds_va], feval=make_pr_auc_feval(y_va.values, seed=seed),
-                                callbacks=[lgb.log_evaluation(period=0)])
-                best = 1200
-                p = bst.predict(X_va)
-            else:
-                nb = 6000 if over.get("learning_rate") == 0.01 else 4000
-                bst = lgb.train(prm, ds_tr, num_boost_round=nb, valid_sets=[ds_va],
-                                feval=make_pr_auc_feval(y_va.values, seed=seed),
-                                callbacks=[lgb.early_stopping(200, verbose=False),
-                                           lgb.log_evaluation(period=0)])
-                best = bst.best_iteration
-                p = bst.predict(X_va, num_iteration=best)
-            aps.append(average_precision_score(y_va, p))
-            iters.append(best)
-        rows.append((float(np.mean(aps)), float(np.std(aps)), int(np.mean(iters)), name))
-        print(f"  {name:16s} {np.mean(aps):.4f} +/- {np.std(aps):.4f}  iter~{int(np.mean(iters))}  "
-              f"[{time.time()-t0:.0f}s]", flush=True)
+            ds_va = lgb.Dataset(X_va, label=y_va, categorical_feature=cc, reference=ds_tr, free_raw_data=False)
+            bst = lgb.train(prm, ds_tr, num_boost_round=4000, valid_sets=[ds_va],
+                            feval=make_pr_auc_feval(y_va.values, seed=seed),
+                            callbacks=[lgb.early_stopping(200, verbose=False),
+                                       lgb.log_evaluation(period=0)])
+            p = bst.predict(X_va, num_iteration=bst.best_iteration)
+            base.append(average_precision_score(yv, p))
+            for h in HOURS:
+                blk = (hrs // h).astype("int64")
+                loo = 0.5 * (loo_for(p, cid, blk) + loo_for(p, did, blk))
+                for w in WEIGHTS:
+                    acc[(h, w)].append(average_precision_score(yv, (1 - w) * p + w * loo))
+        results[wname] = {"base": float(np.mean(base)),
+                          **{k: float(np.mean(v)) for k, v in acc.items()}}
+        print(f"\n  {wname}: base {np.mean(base):.4f} [{time.time()-t0:.0f}s]", flush=True)
+        del X_tr, X_va
         gc.collect()
 
-    base = [r for r in rows if r[3] == "baseline"][0][0]
-    rows.sort(reverse=True)
-    print("\n=========== UNTOUCHED HYPERPARAMETER DIMENSIONS ===========")
-    print(f"{'config':18s}{'tail AP':>10}{'std':>9}{'iters':>8}{'delta':>10}")
-    for m, sd, it, name in rows:
-        print(f"{name:18s}{m:>10.4f}{sd:>9.4f}{it:>8}{m-base:>+10.4f}")
-    print(f"\nbaseline {base:.4f}; seed-noise std ~0.0020, so a real win needs >= +0.004")
-    top = rows[0]
-    print(f"best: {top[3]} at {top[0]:.4f} ({top[0]-base:+.4f}) -> "
-          f"{'WORTH A CONFIRMATION RUN' if top[0]-base >= 0.004 else 'nothing clears the bar'}")
+    print("\n===== cust+dev: mean LONG-window delta by block hours and weight =====")
+    print(f"{'block':>7}" + "".join(f"{('w='+str(w)):>11}" for w in WEIGHTS))
+    best = None
+    for h in HOURS:
+        row = f"{h:>6}h"
+        for w in WEIGHTS:
+            d = np.mean([results[wn][(h, w)] - results[wn]["base"] for wn in WINDOWS])
+            row += f"{d:>+11.4f}"
+            if best is None or d > best[0]:
+                best = (d, h, w)
+        print(row)
+    d, h, w = best
+    cur = np.mean([results[wn][(24, 0.10)] - results[wn]["base"] for wn in WINDOWS])
+    print(f"\nbest: {h}h w={w} -> {d:+.4f};  current pick (24h, 0.10) -> {cur:+.4f}")
+    print(f"difference {d-cur:+.4f}. Trust a change here only if the ORDERING is")
+    print("monotone across weight columns, not on one cell beating another.")
 
 
 if __name__ == "__main__":
