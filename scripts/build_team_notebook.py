@@ -9,158 +9,70 @@ the code that actually produced our scores. Regenerate after any src/ change:
 import json
 from pathlib import Path
 
-from scripts.build_kaggle_kernel import build_common
+from scripts.build_kaggle_kernel import build_common, V8C_MAIN
 
 ROOT = Path(__file__).resolve().parents[1]
-OUT = ROOT / "notebooks" / "REACT_2026_best_model.ipynb"
+OUT = ROOT / "notebooks" / "REACT_2026_v9c_reproducibility.ipynb"
 
-INTRO = """# REACT 2026 Datathon — best model
+INTRO = """# REACT 2026 Datathon — reproducibility notebook
 
 **Team: Overfit & Overcaffeinated**
 
-Reproduces our best model end-to-end and writes `submission.csv`. Everything
-below is generated from `src/` by `scripts/build_team_notebook.py` — don't edit
-this notebook, edit `src/` and regenerate.
+Reproduces `CANDIDATE_v9c_compliant_0.5280.csv` (public LB **0.55368**), one of
+our two selected submissions, end to end.
 
-## Which model is this
+## The two selected submissions
 
-| | local (Jul 1–15 tail) | public LB |
-|---|---|---|
-| **This notebook — "arm C"** | **0.5252** | not submitted |
-| Previous config (git tag `best-0.53948`) | 0.5204 | **0.53948** |
+| selected | file | public LB | what it is |
+|---|---|---|---|
+| yes | `submission.csv` (Sanzid Islam) | 0.56548 | Propagated Tree-Neural Champion — reproduced separately by its author |
+| yes | **`CANDIDATE_v9c_compliant_0.5280.csv`** | **0.55368** | **this notebook** |
 
-Arm C is our best *model*; 0.53948 is our best *submitted result*. Those two
-numbers are on different scales — the local score is a held-out slice of
-`train.csv`, the LB score is the real test set — so **do not compare them
-directly**. The like-for-like comparison is the local column: 0.5252 vs 0.5204.
+## Rules compliance
 
-## What it does
+Every engineered feature here uses only information **strictly before t**, per
+the organiser's rule. This is enforced mechanically, not by inspection:
 
-LightGBM on ~200 leakage-safe behavioural features. Every feature for a row at
-time *t* uses only rows strictly before *t*. No raw entity IDs reach the model,
-and nothing except the label column touches `fraud`.
+- `leakage_assertions()` — first-occurrence rows must carry no prior statistics
+- `assert_strictly_past()` — fails the run if any forward-looking column reaches
+  a feature matrix; called on the feature list and again on the test matrix
+- `prepare_lgb_frame()` — asserts raw `customer_id` / `merchant_id` /
+  `device_id` / `transaction_id` are absent, in any encoding
 
-Configuration, and why each part is there:
+No target encoding, no per-entity or per-subgroup label aggregation at any grain
+finer than the whole training set, no external data, no random K-fold (all
+validation is time-based / expanding-window).
 
-- **No `scale_pos_weight`.** The single biggest win of the competition (+0.026
-  on the LB). PR-AUC is a *rank* metric; upweighting positives 55× distorts the
-  ranking it scores. Measured monotone on fold 3: spw=55 → 0.5045, spw=10 →
-  0.5069, spw=7.4 → 0.5091, spw=1 → 0.5116.
-- **`lr=0.02`, `num_leaves=127`, `min_data_in_leaf=50`, `feature_fraction=0.85`.**
-  Re-swept after removing the class weighting (the original sweep ran under
-  spw=55 and every conclusion it drew was void). A second sweep over
-  `min_data_in_leaf` × `feature_fraction` confirmed this cell is the optimum —
-  though the whole grid spans only 0.0028, so treat it as a plateau, not a peak.
-- **No graph/component features.** Removing them cost −0.0004, i.e. nothing.
-  Dropped on parsimony, not because they were shown to hurt.
-- **Rounds from a Jul 1–15 probe, ×1.1, then 5-seed averaging.**
+`docs/METHODOLOGY_DISCLOSURE.md` documents the one judgement call in our *other*
+selected submission (a post-inference propagation step that reads a symmetric
+±30min window). **That step is absent here.**
 
-## Measurement discipline — read before trusting any change
+## The model
 
-**Seed-noise std on the recent windows is 0.0020.** This was measured only
-after seven consecutive experiments had produced deltas of 0.0015–0.002 — all
-at or below the noise floor, all meaningless. A change counts only if it clears
-**+0.004** on the recent-window mean, improves at least two of three windows,
-and drops none by more than 0.003.
+197 strictly-prior behavioural features plus a backward-rich family (uniform
+window ladder, past-only rate acceleration, second-order gaps) = **269 features**.
 
-**Select on the recent windows, never the 4-fold mean.** The 4-fold mean (~0.73)
-is dominated by three easy-regime folds that look nothing like the test period.
+Two LightGBM models, each early-stopped independently on a Jul 1–15 holdout and
+averaged over 5 seeds:
 
-## Known limits
+- **full-train** (`lr=0.02, num_leaves=127, min_data_in_leaf=50, ff=0.85`)
+- **90-day specialist** (`lr=0.02, num_leaves=63, min_data_in_leaf=100, ff=0.75`)
 
-- Test runs **Jul 16 – Sep 15**, up to 62 days past the end of training, and
-  accuracy decays **−0.019 AP over 60 days** of staleness. Our Jul 1–15 probe is
-  a gap-0 window, so it is the most optimistic estimate available and **it
-  overstates what late test rows will score**.
-- The test period sits entirely after the early-July regime change, and we hold
-  only ~1–2 weeks of post-change training data out of 6.5 months.
+blended **60/40**. Held-out Jul 1–15: full 0.5263, specialist 0.5267, blend **0.5280**.
 
-## Running it
+## Two findings worth recording
 
-Runs anywhere `train.csv` / `test.csv` / `sample_submission.csv` are present —
-locally, or on Kaggle after attaching the competition. Path detection handles
-both Kaggle mount layouts. CPU only, roughly 40–60 min end to end.
+**No `scale_pos_weight`.** It was prescribed from the start for the 1.76%
+imbalance and every early sweep held it fixed. PR-AUC is a *rank* metric;
+upweighting positives distorts the ranking it scores. Removing it was worth
+**+0.026** on the leaderboard — our single largest gain.
+
+**Local gains amplify ~2x on the leaderboard.** Four calibration points:
+0.5204→0.53948, 0.5322→0.56492, 0.5263→0.55262, 0.5280→0.55368. A two-month
+test window rewards ranking improvements far more than a two-week fold shows.
 """
 
-BEST_MAIN = '''
-# ---- reproduce the best model and write submission.csv --------------------
-t0 = time.time()
-train = pd.read_csv(TRAIN_CSV, parse_dates=[TIME_COL])
-test = pd.read_csv(TEST_CSV, parse_dates=[TIME_COL])
-df = build_combined_frame(train, test)
-assert_frame_sane(df)
-del train, test
-gc.collect()
-
-df = build_features(df)
-leakage_assertions(df)
-feature_cols, cat_cols = get_feature_columns(df)
-
-# arm C: everything except the graph/component family
-cols = [c for c in feature_cols if "component_size_prior" not in c]
-cc = [c for c in cat_cols if c in cols]
-print(f"featurized={df.shape}, {len(cols)} model features ({time.time()-t0:.0f}s)", flush=True)
-
-labeled = df[~df["is_test"]]
-test_df = df[df["is_test"]]
-frame_sorted = bool(df[TIME_COL].is_monotonic_increasing)
-del df
-gc.collect()
-
-BEST_PARAMS = dict(
-    objective="binary", metric="None", verbosity=-1,
-    learning_rate=0.02, num_leaves=127, feature_fraction=0.85,
-    bagging_fraction=0.85, bagging_freq=1, min_data_in_leaf=50,
-)
-
-# 1) probe on a held-out Jul 1-15 tail to pick the round count
-hold_start = pd.Timestamp("2026-07-01")
-fit = labeled.loc[labeled[TIME_COL] < hold_start]
-hold = labeled.loc[labeled[TIME_COL] >= hold_start]
-X_f, y_f = prepare_lgb_frame(fit, cols, cc), fit[LABEL_COL].astype(int)
-X_h, y_h = prepare_lgb_frame(hold, cols, cc), hold[LABEL_COL].astype(int)
-probe = lgb.train(
-    dict(BEST_PARAMS, seed=0, bagging_seed=0, feature_fraction_seed=0),
-    lgb.Dataset(X_f, label=y_f, categorical_feature=cc, free_raw_data=False),
-    num_boost_round=4000,
-    valid_sets=[lgb.Dataset(X_h, label=y_h, categorical_feature=cc, free_raw_data=False)],
-    feval=make_pr_auc_feval(y_h.values, seed=0),
-    callbacks=[lgb.early_stopping(200, verbose=False), lgb.log_evaluation(period=0)],
-)
-tail_ap = average_precision_score(y_h, probe.predict(X_h, num_iteration=probe.best_iteration))
-rounds = int(round(probe.best_iteration * 1.1))
-print(f"held-out(Jul01-15) PR-AUC = {tail_ap:.4f}   rounds -> {rounds}", flush=True)
-print("   (expect ~0.5252; +/- 0.0020 is seed noise, so 0.523-0.527 reproduces)")
-del X_f, X_h, probe
-gc.collect()
-
-# 2) refit on ALL labelled data at that round count, averaged over 5 seeds
-X_full, y_full = prepare_lgb_frame(labeled, cols, cc), labeled[LABEL_COL].astype(int)
-X_test = prepare_lgb_frame(test_df, cols, cc)
-ids = test_df["transaction_id"].values
-ds = lgb.Dataset(X_full, label=y_full, categorical_feature=cc, free_raw_data=False)
-preds = np.mean([
-    lgb.train(dict(BEST_PARAMS, seed=s, bagging_seed=s, feature_fraction_seed=s),
-              ds, num_boost_round=rounds).predict(X_test)
-    for s in (0, 1, 2, 3, 4)
-], axis=0)
-
-# 3) checks that must hold before this file is worth submitting
-assert frame_sorted, "combined frame must be time-sorted for the prior-only features to be valid"
-assert LABEL_COL not in X_test.columns
-for c in ID_COLS:
-    assert c not in X_test.columns, f"banned raw ID column {c} reached the model"
-assert not np.isnan(preds).any() and np.all((preds >= 0) & (preds <= 1))
-
-sample = pd.read_csv(SAMPLE_SUBMISSION_CSV)
-sub = pd.DataFrame({"transaction_id": ids, "fraud": preds})
-sub = sub.set_index("transaction_id").loc[sample["transaction_id"]].reset_index()
-assert list(sub["transaction_id"]) == list(sample["transaction_id"]), "row order must match sample_submission"
-assert len(sub) == len(sample)
-sub.to_csv(OUT_DIR / "submission.csv", index=False)
-print(f"\\nwrote submission.csv  rows={len(sub)}  mean={sub['fraud'].mean():.5f}  "
-      f"({time.time()-t0:.0f}s)")
-'''
+BEST_MAIN = V8C_MAIN
 
 OUTRO = """## Before anyone submits this
 

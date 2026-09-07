@@ -620,3 +620,28 @@ strictly-before-t rule strictly.
 Recommended pairing: **sanzid champion (0.56548) + v9c (0.55368)** -- keeps the
 top score while ensuring one selection needs no argument at all. Spearman
 between them is ~0.63, so they are genuinely different models.
+
+## Reproducibility artifacts (notebook + summary due 2026-09-08 10:00)
+
+**Selected submissions**
+
+| selected | file | LB | reproduced by |
+|---|---|---|---|
+| yes | `submission.csv` (Sanzid Islam) | 0.56548 | **his** `scripts/35_generate_propagated_champion.py` on `sanzid/tree-neural-0.56548` |
+| yes | `CANDIDATE_v9c_compliant_0.5280.csv` | 0.55368 | `notebooks/REACT_2026_v9c_reproducibility.ipynb` |
+
+**What is saved and where**
+
+- All 20 Kaggle kernels are versioned server-side under `ahsanulhoque48cu/react-2026-*`,
+  including `react-2026-v9c`, which produced the selected compliant submission.
+- `notebooks/REACT_2026_v9c_reproducibility.ipynb` -- regenerated from `src/` by
+  `scripts/build_team_notebook.py`, so it cannot drift from the code that
+  produced the score. The earlier `REACT_2026_best_model.ipynb` was deleted: it
+  reproduced the old arm C + 7-day propagation model, which is neither selected
+  submission and would have misled a reviewer.
+- `docs/METHODOLOGY_DISCLOSURE.md` -- the argument for the propagation step in
+  the champion, written for a reviewer, including that we built forward-looking
+  features worth +0.024 and discarded them unsubmitted.
+
+**Still needed from the team**: Sanzid's own notebook for the 0.56548 champion.
+That submission is his code, and it is the one carrying our rank.
