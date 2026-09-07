@@ -588,3 +588,69 @@ def add_target_encoding(df: pd.DataFrame, entity_cols=("customer_id", "merchant_
         new[f"te_{tag}_n"] = prior_n.to_numpy()
         new[f"te_{tag}_pos"] = prior_pos.to_numpy()
     return pd.concat([df, pd.DataFrame(new, index=df.index)], axis=1)
+
+
+def add_forward_window_features(df: pd.DataFrame, entity_col: str, prefix: str,
+                                windows_min=(60, 1440)) -> pd.DataFrame:
+    """Forward- and symmetric-looking window counts/sums per entity.
+
+    Every other feature here is strictly PRIOR, which is the right default when
+    a careless aggregate can leak the label. But these use no labels at all --
+    only timestamps and amounts -- so looking forward is safe, and it is
+    exactly the information the propagation post-process exploits when a
+    +/-60min neighbourhood includes a customer's LATER transactions.
+
+    Giving it to the model directly lets a tree combine it with everything else
+    instead of it arriving as a fixed blend bolted on at the end. Legal for the
+    same reason the entity histories are: the whole test set is available at
+    once and none of this touches `fraud`."""
+    # total_seconds(), NOT astype("int64")/1e9: pandas 2.x takes the datetime
+    # resolution from the input (microseconds here, not nanoseconds), which
+    # would silently scale the clock by 1000 and put every row in every window.
+    t = (df[TIME_COL] - df[TIME_COL].min()).dt.total_seconds().to_numpy()
+    codes = pd.factorize(df[entity_col].astype(str))[0].astype("int64")
+    amt = df["amount_bdt"].to_numpy(dtype="float64")
+    n = len(df)
+
+    # The per-entity offset must exceed the time span PLUS the widest window,
+    # or a low-timestamp row of one entity lands inside the window of a
+    # high-timestamp row of the entity before it and they pool together.
+    max_sec = max(windows_min) * 60.0
+    span = (t.max() - t.min()) + max_sec + 1.0
+    key = codes * span + t
+    o = np.argsort(key, kind="stable")
+    ks, amts = key[o], amt[o]
+    csum = np.concatenate([[0.0], np.cumsum(amts)])
+    idx = np.arange(n)
+
+    new = {}
+    for w in windows_min:
+        sec = w * 60.0
+        # forward: (t, t+w]
+        hi = np.searchsorted(ks, ks + sec, side="right")
+        fwd_n = (hi - idx - 1).astype("float64")
+        fwd_amt = csum[hi] - csum[idx + 1]
+        # symmetric: [t-w, t+w], excluding self
+        lo = np.searchsorted(ks, ks - sec, side="left")
+        sym_n = (hi - lo - 1).astype("float64")
+        sym_amt = csum[hi] - csum[lo] - amts
+        for name, arr in ((f"{prefix}_fwd_cnt_{w}m", fwd_n),
+                          (f"{prefix}_fwd_amtsum_{w}m", fwd_amt),
+                          (f"{prefix}_sym_cnt_{w}m", sym_n),
+                          (f"{prefix}_sym_amtsum_{w}m", sym_amt)):
+            z = np.empty(n, dtype="float64")
+            z[o] = arr
+            new[name] = z
+
+    # seconds to this entity's NEXT transaction -- the mirror of the existing
+    # seconds_since_last, which is one of the strongest features we have.
+    ts = t[o]
+    nxt = np.full(n, np.nan)
+    same = np.empty(n, dtype=bool)
+    same[:-1] = codes[o][:-1] == codes[o][1:]
+    same[-1] = False
+    nxt[:-1] = np.where(same[:-1], ts[1:] - ts[:-1], np.nan)
+    z = np.empty(n, dtype="float64")
+    z[o] = nxt
+    new[f"{prefix}_seconds_to_next"] = z
+    return pd.concat([df, pd.DataFrame(new, index=df.index)], axis=1)
