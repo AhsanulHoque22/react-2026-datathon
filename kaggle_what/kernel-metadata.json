@@ -1,0 +1,14 @@
+{
+  "id": "ahsanulhoque48cu/react-2026-what",
+  "title": "REACT 2026 What",
+  "code_file": "react_what.py",
+  "language": "python",
+  "kernel_type": "script",
+  "is_private": true,
+  "enable_gpu": false,
+  "enable_tpu": false,
+  "enable_internet": false,
+  "dataset_sources": [],
+  "competition_sources": ["react-2026-datathon"],
+  "kernel_sources": []
+}
