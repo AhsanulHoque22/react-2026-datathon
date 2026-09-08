@@ -1,7 +1,8 @@
 # Method Summary: Multi-Horizon Tree-Neural Hybrid with Temporal Entity Propagation
 
 **Team**: Overfit & Overcaffeinated | **Competition**: REACT 2026 Datathon (Tabular Fraud Detection)  
-**Leaderboard Result**: 0.56548 Public Leaderboard | **Local PR-AUC**: 0.5359 | **Metric**: Average Precision (PR-AUC)
+**Leaderboard Result**: 0.56548 Public Leaderboard | **Local PR-AUC**: 0.5359 | **Metric**: Average Precision (PR-AUC)  
+**External Pretrained Models / Public Code**: None (all models trained from scratch) | **External Data**: None
 
 ---
 

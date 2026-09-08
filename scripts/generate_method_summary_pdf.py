@@ -24,7 +24,14 @@ text = re.sub(r"\$(.*?)\$", repl_inline, text)
 # Remove the raw markdown title and meta since we'll make a sleek HTML header
 # Lines 1 to 5
 lines = text.splitlines()
-body_lines = [l for l in lines if not l.startswith("# Method Summary") and not l.startswith("**Team**:") and not l.startswith("**Leaderboard") and not l.strip() == "---"]
+body_lines = [
+    l for l in lines 
+    if not l.startswith("# Method Summary") 
+    and not l.startswith("**Team**:") 
+    and not l.startswith("**Leaderboard") 
+    and not l.startswith("**External")
+    and not l.strip() == "---"
+]
 clean_text = "\n".join(body_lines).strip()
 
 md = MarkdownIt("gfm-like", {"linkify": False, "breaks": True})
@@ -173,6 +180,8 @@ full_html = f"""<!DOCTYPE html>
         <div><strong>Competition:</strong> REACT 2026 Datathon (Tabular Fraud Detection)</div>
         <div><strong>Public Leaderboard:</strong> <span class="badge">0.56548</span></div>
         <div><strong>Local PR-AUC (Jul 1–15):</strong> <span class="badge">0.5359</span> (Baseline: 0.1664)</div>
+        <div><strong>External Pretrained Models:</strong> <span class="badge">None</span> (all trained from scratch)</div>
+        <div><strong>External Data / Public Code:</strong> <span class="badge">None</span> (fully custom-built)</div>
     </div>
 </div>
 
