@@ -18,15 +18,15 @@ INTRO = """# REACT 2026 Datathon — reproducibility notebook
 
 **Team: Overfit & Overcaffeinated**
 
-Reproduces `CANDIDATE_v9c_compliant_0.5280.csv` (public LB **0.55368**), one of
-our two selected submissions, end to end.
+Reproduces `CANDIDATE_v9c_compliant_0.5280.csv` (public LB **0.55368**), the
+strictly-past alternative to our final submission, end to end.
 
-## The two selected submissions
+## The submissions
 
-| selected | file | public LB | what it is |
+| role | file | public LB | what it is |
 |---|---|---|---|
-| yes | `submission.csv` (Sanzid Islam) | 0.56548 | Propagated Tree-Neural Champion — reproduced separately by its author |
-| yes | **`CANDIDATE_v9c_compliant_0.5280.csv`** | **0.55368** | **this notebook** |
+| final private evaluation | `submission.csv` (Sanzid Islam) | 0.56548 | Propagated Tree-Neural Champion — reproduced separately by its author |
+| strictly-past alternative | **`CANDIDATE_v9c_compliant_0.5280.csv`** | **0.55368** | **this notebook** |
 
 ## Rules compliance
 
@@ -43,8 +43,8 @@ No target encoding, no per-entity or per-subgroup label aggregation at any grain
 finer than the whole training set, no external data, no random K-fold (all
 validation is time-based / expanding-window).
 
-`docs/METHODOLOGY_DISCLOSURE.md` documents the one judgement call in our *other*
-selected submission (a post-inference propagation step that reads a symmetric
+`docs/METHODOLOGY_DISCLOSURE.md` documents the one judgement call in our final
+submission (a post-inference propagation step that reads a symmetric
 ±30min window). **That step is absent here.**
 
 ## The model

@@ -74,7 +74,7 @@ change, since conclusions drawn under spw=55 were void.
 independently and averaged over 5 seeds, blended 60/40. Both train on
 strictly-prior features; this ensembles two training spans, not reweighted rows.
 
-Our higher-scoring selection additionally blends a **Tabular ResNet** at 12% by
+Our final submission additionally blends a **Tabular ResNet** at 12% by
 rank, and applies a **post-inference entity propagation** step (section 5).
 
 ## 4. Validation strategy
@@ -101,7 +101,7 @@ CatBoost, recency weighting, and isotonic calibration.
 
 | submission | public LB | notes |
 |---|---|---|
-| `submission.csv` | **0.56548** | dual-horizon LightGBM + 12% Tabular ResNet + propagation |
+| `submission.csv` **(final private evaluation)** | **0.56548** | dual-horizon LightGBM + 12% Tabular ResNet + propagation |
 | `CANDIDATE_v9c_compliant_0.5280.csv` | **0.55368** | strictly-past throughout; no propagation |
 
 Progression: 0.16644 (baseline) -> 0.51309 (behavioural pipeline) -> 0.53948
@@ -112,9 +112,10 @@ Progression: 0.16644 (baseline) -> 0.51309 (behavioural pipeline) -> 0.53948
 2.15x, 2.22x and 1.87x. A two-month test window rewards ranking improvements far
 more than a two-week validation fold reveals.
 
-**One judgement call, disclosed.** Our higher-scoring submission applies a
-post-inference blend: `final(i) = 0.5*raw(i) + 0.5*mean(raw(j))` over rows *j*
-sharing *i*'s customer or device within +/-30 minutes. The window is symmetric,
+**One judgement call, disclosed.** The submission we entered for the final
+private evaluation applies a post-inference blend:
+`final(i) = 0.5*raw(i) + 0.5*mean(raw(j))` over rows *j* sharing *i*'s customer
+or device within +/-30 minutes. The window is symmetric,
 so it reads rows after *t*. It is **not an engineered feature** --- the model
 never sees it --- and it uses **no labels**, only model outputs, entity ids and
 timestamps, with window and weight fitted on labelled windows inside
@@ -122,7 +123,8 @@ timestamps, with window and weight fitted on labelled windows inside
 3.87x base for devices, 2.63x for customers), which the rules explicitly invite.
 It changes **4.7%** of test rows. We believe the rule as written governs
 features, but we are stating the question openly rather than leaving it to be
-discovered. Our second selection removes the step entirely.
+discovered. The strictly-past alternative above removes the step entirely, and
+its notebook is included.
 
 **What we built and did not submit.** Forward-looking window features (counts
 over *[t, t+w]*, time-to-next-transaction) measured **+0.024 local PR-AUC, our

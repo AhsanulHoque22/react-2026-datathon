@@ -8,16 +8,21 @@ a judgement call rather than a plain fact.
 
 ---
 
-## 1. The two selected submissions
+## 1. The submissions
 
-| selected | file | public LB | notebook |
+| role | file | public LB | notebook |
 |---|---|---|---|
-| yes | `submission.csv` | **0.56548** | `REACT_2026_champion_reproducibility.ipynb` |
-| yes | `CANDIDATE_v9c_compliant_0.5280.csv` | **0.55368** | `REACT_2026_v9c_reproducibility.ipynb` |
+| **final private evaluation** | `submission.csv` | **0.56548** | `REACT_2026_champion_reproducibility.ipynb` |
+| strictly-past alternative | `CANDIDATE_v9c_compliant_0.5280.csv` | **0.55368** | `REACT_2026_v9c_reproducibility.ipynb` |
 
-The first includes a post-inference propagation step (section 5). The second
-removes it entirely and is strictly-past throughout, so a reviewer reading the
-rule more strictly than we do still has a submission that needs no argument.
+**`submission.csv` is the entry we submitted for the final private evaluation**
+(in this repository: `submissions/SANZID_champion_0.56548.csv`). It includes a
+post-inference propagation step, disclosed in full in section 5.
+
+The second removes that step entirely and is strictly-past throughout. We
+provide it and its notebook so that a reviewer reading the rule more strictly
+than we do can see exactly what our pipeline scores with no argument attached
+--- 0.55368, a loss of 0.0118.
 
 ---
 
@@ -262,7 +267,7 @@ present, CPU only.
 final_submission/
   REACT_2026_champion_reproducibility.ipynb  -->  submission.csv         LB 0.56548
   REACT_2026_v9c_reproducibility.ipynb       -->  CANDIDATE_v9c_....csv  LB 0.55368
-  METHODOLOGY.pdf                            -->  this document
+  METHOD_SUMMARY.pdf                         -->  2-page summary of this document
 ```
 
 Full source, experiment history and every negative result are at
