@@ -1,0 +1,1264 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Overfit &amp; Overcaffeinated · REACT 2026 Datathon</title>
+<!-- KaTeX for formulas -->
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/katex.min.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.8/dist/contrib/auto-render.min.js"
+        onload="renderMathInElement(document.body, {
+            delimiters: [
+                {left: '$$', right: '$$', display: true},
+                {left: '$', right: '$', display: false}
+            ]
+        });"></script>
+<!-- Typography: Newsreader (Editorial Serif) + Plus Jakarta Sans (Clean Body) -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,500;0,6..72,600;0,6..72,700;0,6..72,800;1,6..72,400;1,6..72,600&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+
+<style>
+    * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+    }
+
+    body {
+        font-family: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+        background-color: #0b152d;
+        color: #0b152d;
+        overflow-x: hidden;
+        user-select: none;
+        -webkit-font-smoothing: antialiased;
+    }
+
+    #deck {
+        position: relative;
+        width: 100vw;
+        height: 100vh;
+        overflow: hidden;
+    }
+
+    /* Top Progress Bar & Header */
+    #top-bar {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        height: 42px;
+        background: rgba(11, 21, 45, 0.94);
+        backdrop-filter: blur(10px);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 32px;
+        z-index: 100;
+        font-size: 12px;
+        color: #94a3b8;
+    }
+
+    #progress-line {
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        height: 3px;
+        background: linear-gradient(90deg, #38bdf8, #ff5722);
+        transition: width 0.3s ease;
+    }
+
+    .team-badge {
+        font-weight: 700;
+        color: #ffffff;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        letter-spacing: 0.5px;
+        text-transform: uppercase;
+        font-size: 11px;
+    }
+
+    .slide-counter {
+        font-family: 'JetBrains Mono', monospace;
+        font-weight: 600;
+        background: rgba(255, 255, 255, 0.08);
+        padding: 3px 10px;
+        border-radius: 12px;
+        color: #38bdf8;
+        font-size: 11.5px;
+    }
+
+    /* Slides Base */
+    .slide {
+        display: none;
+        width: 100vw;
+        height: 100vh;
+        padding: 50px 60px 32px 60px;
+        flex-direction: column;
+        justify-content: space-between;
+        position: relative;
+    }
+
+    .slide.active {
+        display: flex;
+    }
+
+    /* Theme: Dark Navy (Slides 1, 6, 7) */
+    .slide.theme-dark {
+        background-color: #0b152d;
+        color: #ffffff;
+        background-image: 
+            radial-gradient(circle at 90% 10%, rgba(30, 58, 138, 0.35) 0%, transparent 50%),
+            radial-gradient(circle at 10% 90%, rgba(15, 23, 42, 0.55) 0%, transparent 50%);
+    }
+
+    /* Theme: Light Slate (Slides 2, 3, 4, 5, 8, 9, 10, 11) */
+    .slide.theme-light {
+        background-color: #f4f6fa;
+        color: #0b152d;
+        background-image: radial-gradient(circle at 95% 5%, rgba(226, 232, 240, 0.45) 0%, transparent 40%);
+    }
+
+    /* Headers */
+    .slide-tag {
+        font-family: 'Plus Jakarta Sans', sans-serif;
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 2px;
+        color: #ff5722;
+        font-weight: 800;
+        margin-bottom: 4px;
+    }
+
+    .slide.theme-dark .slide-tag {
+        color: #38bdf8;
+    }
+
+    .slide-heading {
+        font-family: 'Newsreader', Georgia, serif;
+        font-size: 32px;
+        font-weight: 800;
+        letter-spacing: -0.5px;
+        line-height: 1.15;
+        color: #0b152d;
+    }
+
+    .slide.theme-dark .slide-heading {
+        color: #ffffff;
+    }
+
+    .slide-subheading {
+        font-size: 13.5px;
+        color: #64748b;
+        margin-top: 3px;
+        line-height: 1.35;
+    }
+
+    .slide.theme-dark .slide-subheading {
+        color: #94a3b8;
+    }
+
+    /* Cards */
+    .card-white {
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        padding: 16px 20px;
+        box-shadow: 0 4px 14px rgba(0, 0, 0, 0.03);
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-start;
+    }
+
+    .card-dark {
+        background: #0b152d;
+        color: #ffffff;
+        border-radius: 12px;
+        padding: 18px 22px;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-start;
+        box-shadow: 0 8px 24px rgba(11, 21, 45, 0.15);
+    }
+
+    .card-navy-glass {
+        background: rgba(18, 32, 68, 0.85);
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 12px;
+        padding: 18px 24px;
+        color: #ffffff;
+    }
+
+    /* Big Numbers */
+    .huge-stat {
+        font-family: 'Newsreader', Georgia, serif;
+        font-size: 34px;
+        font-weight: 800;
+        line-height: 1.1;
+        color: #0b152d;
+        margin-bottom: 4px;
+    }
+
+    .huge-stat.coral {
+        color: #ff5722;
+    }
+
+    .huge-stat.blue {
+        color: #38bdf8;
+    }
+
+    .slide.theme-dark .huge-stat {
+        color: #ffffff;
+    }
+
+    .stat-label {
+        font-size: 11.5px;
+        color: #64748b;
+        line-height: 1.35;
+    }
+
+    .slide.theme-dark .stat-label {
+        color: #94a3b8;
+    }
+
+    /* Icon Circles */
+    .icon-circle {
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        background: #0b152d;
+        color: #ffffff;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        margin-bottom: 10px;
+    }
+
+    .icon-circle.coral {
+        background: #ff5722;
+    }
+
+    /* Pills */
+    .pill {
+        display: inline-block;
+        padding: 3px 8px;
+        border-radius: 6px;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 11px;
+        font-weight: 700;
+    }
+
+    .pill-coral { background: rgba(255, 87, 34, 0.12); color: #ff5722; }
+    .pill-blue { background: rgba(2, 132, 199, 0.12); color: #0284c7; }
+    .pill-green { background: rgba(16, 185, 129, 0.12); color: #059669; }
+
+    /* Footer */
+    .slide-footer {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        font-size: 11px;
+        color: #94a3b8;
+        letter-spacing: 1px;
+        text-transform: uppercase;
+        border-top: 1px solid rgba(0, 0, 0, 0.06);
+        padding-top: 10px;
+        margin-top: 10px;
+    }
+
+    .slide.theme-dark .slide-footer {
+        border-top: 1px solid rgba(255, 255, 255, 0.08);
+        color: #64748b;
+    }
+
+    /* Figures */
+    .figure-hero-container {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+        border-radius: 10px;
+        background: rgba(0, 0, 0, 0.25);
+    }
+
+    .figure-hero-img {
+        width: 100%;
+        height: auto;
+        max-height: 350px;
+        object-fit: contain;
+        border-radius: 8px;
+        display: block;
+    }
+
+    /* Navigation Overlay */
+    .nav-hint {
+        position: fixed;
+        bottom: 8px;
+        right: 20px;
+        font-size: 11px;
+        color: #94a3b8;
+        font-family: 'JetBrains Mono', monospace;
+        z-index: 100;
+    }
+
+    /* Print Styles */
+    @media print {
+        @page {
+            size: 297mm 167.0625mm;
+            margin: 0;
+        }
+        body {
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+        }
+        #top-bar, .nav-hint {
+            display: none !important;
+        }
+        #deck {
+            position: static !important;
+            width: auto !important;
+            height: auto !important;
+            overflow: visible !important;
+        }
+        .slide {
+            display: flex !important;
+            width: 297mm !important;
+            height: 167.0625mm !important;
+            page-break-after: always !important;
+            break-after: page !important;
+            padding: 26px 36px 18px 36px !important;
+            box-sizing: border-box !important;
+        }
+    }
+</style>
+</head>
+<body>
+
+<div id="deck">
+    <!-- Top Header -->
+    <div id="top-bar">
+        <div class="team-badge">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#38bdf8" stroke-width="2.5"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+            Overfit &amp; Overcaffeinated &nbsp;|&nbsp; <span style="color:#64748b; font-weight:normal;">REACT 2026 Datathon</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:16px;">
+            <span class="pill pill-green" style="background:#064e3b; color:#34d399;">Public LB: 0.56548</span>
+            <div class="slide-counter" id="slide-num">Slide 1 / 11</div>
+        </div>
+        <div id="progress-line" style="width: 9.09%;"></div>
+    </div>
+
+    <!-- ======================================================= -->
+    <!-- SLIDE 1: TITLE SLIDE (THEME DARK)                       -->
+    <!-- ======================================================= -->
+    <section class="slide theme-dark active" id="slide-1">
+        <div style="margin-top: 20px;">
+            <div style="display:flex; align-items:center; gap:12px; margin-bottom: 18px;">
+                <div style="width:38px; height:38px; border-radius:50%; background:rgba(255,255,255,0.08); display:flex; align-items:center; justify-content:center;">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>
+                </div>
+                <div style="font-size:12px; font-weight:700; letter-spacing:2.5px; text-transform:uppercase; color:#cbd5e1;">
+                    REACT 2026 Datathon &nbsp;·&nbsp; Tabular Fraud Detection
+                </div>
+            </div>
+
+            <h1 style="font-family:'Newsreader', Georgia, serif; font-size: 56px; font-weight: 800; letter-spacing: -1px; line-height: 1.08; margin-bottom: 12px;">
+                Overfit <span style="color:#ff5722;">&amp;</span> Overcaffeinated
+            </h1>
+            <p style="font-size: 19px; font-style: italic; color: #cbd5e1; font-weight: 400; max-width: 800px;">
+                Catching fraud that moves — without ever seeing the future.
+            </p>
+        </div>
+
+        <div style="border-top: 1px solid rgba(255,255,255,0.12); padding-top: 14px; margin-top: 14px;">
+            <div style="display:flex; align-items:center; justify-content:center; gap: 14px; font-size: 13.5px; color: #cbd5e1; font-weight: 600;">
+                <span>Causal feature engineering</span>
+                <span style="color:#38bdf8;">→</span>
+                <span>Dual-horizon LightGBM + Tabular ResNet</span>
+                <span style="color:#38bdf8;">→</span>
+                <span>Temporal propagation</span>
+            </div>
+        </div>
+
+        <!-- Big Hero Box -->
+        <div class="card-navy-glass" style="margin-top: 14px; padding: 22px 36px; display: flex; align-items: center; justify-content: space-around;">
+            <div style="text-align: center; flex: 1;">
+                <div class="huge-stat" style="font-size: 52px; margin-bottom: 2px;">3.4×</div>
+                <div class="stat-label" style="font-size: 13px; color:#94a3b8;">Baseline PR-AUC (0.1664 → 0.56548)</div>
+            </div>
+            <div style="width: 1px; height: 55px; background: rgba(255,255,255,0.15);"></div>
+            <div style="text-align: center; flex: 1;">
+                <div class="huge-stat" style="font-size: 52px; margin-bottom: 2px;">0</div>
+                <div class="stat-label" style="font-size: 13px; color:#94a3b8;">External data or pretrained models</div>
+            </div>
+            <div style="width: 1px; height: 55px; background: rgba(255,255,255,0.15);"></div>
+            <div style="text-align: center; flex: 1;">
+                <div class="huge-stat coral" style="font-size: 52px; margin-bottom: 2px;">0.56548</div>
+                <div class="stat-label" style="font-size: 13px; color:#94a3b8;">Public Leaderboard Score</div>
+            </div>
+        </div>
+
+        <div class="slide-footer">
+            <span>OVERFIT &amp; OVERCAFFEINATED &nbsp;·&nbsp; REACT 2026 DATATHON</span>
+            <span>1</span>
+        </div>
+    </section>
+
+    <!-- ======================================================= -->
+    <!-- SLIDE 2: PROBLEM & FRAMING (REGIME SHIFT HERO FIGURE)   -->
+    <!-- ======================================================= -->
+    <section class="slide theme-light" id="slide-2">
+        <div>
+            <div class="slide-tag">Problem &amp; Framing</div>
+            <h1 class="slide-heading">Fraud is rare. And it keeps moving.</h1>
+            <p class="slide-subheading">
+                Extreme 1.76% imbalance compounded by acute summer behavioral drift across a 2-month blind test gap.
+            </p>
+        </div>
+
+        <!-- Top Stat Ribbon: Clean, compact 3 cards -->
+        <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap:12px; margin-top:10px;">
+            <div class="card-white" style="padding:10px 16px; flex-direction:row; align-items:center; gap:12px;">
+                <div class="huge-stat" style="font-size:26px; margin:0;">1.76%</div>
+                <div class="stat-label">Label prevalence (1 in 57 txns). Metric: <strong>Average Precision (PR-AUC)</strong>.</div>
+            </div>
+            <div class="card-white" style="padding:10px 16px; flex-direction:row; align-items:center; gap:12px;">
+                <div class="huge-stat" style="font-size:26px; margin:0;">731,942</div>
+                <div class="stat-label">Labeled training transactions (Jan 1 – Jul 15), ordered strictly by time.</div>
+            </div>
+            <div class="card-white" style="padding:10px 16px; flex-direction:row; align-items:center; gap:12px;">
+                <div class="huge-stat" style="font-size:26px; margin:0;">262,648</div>
+                <div class="stat-label">Held-out test transactions, scored completely blind across 60 days.</div>
+            </div>
+        </div>
+
+        <!-- Big Hero Visual Figure -->
+        <div class="card-dark" style="flex:1; margin-top:10px; padding:12px 20px; justify-content:space-between;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <div style="font-family:'Newsreader', Georgia, serif; font-size:18px; font-weight:700; color:#ffffff;">
+                    Empirical Audit: Winter Amount Decay vs. Summer Velocity Surge
+                </div>
+                <span class="pill pill-coral">Regime Shift Discovery</span>
+            </div>
+
+            <!-- Full-width hero image -->
+            <div class="figure-hero-container" style="max-height: 330px; flex: 1; margin: 8px 0; padding-top: 6px;">
+                <img src="figures/fig2_regime_shift_drift.jpg" class="figure-hero-img" alt="Regime Shift Figure">
+            </div>
+
+            <div style="font-size:12px; color:#cbd5e1; border-top:1px solid rgba(255,255,255,0.1); padding-top:6px; display:flex; justify-content:space-between;">
+                <span>• Winter limits halved amount AP (0.41 → 0.24); Summer bot bursts doubled velocity AP (0.095 → 0.172).</span>
+                <span style="color:#38bdf8; font-weight:700;">Solved by our 90-day specialist horizon.</span>
+            </div>
+        </div>
+
+        <div class="slide-footer">
+            <span>OVERFIT &amp; OVERCAFFEINATED &nbsp;·&nbsp; REACT 2026 DATATHON</span>
+            <span>2</span>
+        </div>
+    </section>
+
+    <!-- ======================================================= -->
+    <!-- SLIDE 3: APPROACH & ARCHITECTURE (SYSTEM BLUEPRINT HERO)-->
+    <!-- ======================================================= -->
+    <section class="slide theme-light" id="slide-3">
+        <div>
+            <div class="slide-tag">Approach &amp; Architecture</div>
+            <h1 class="slide-heading">Three stages. Zero shortcuts.</h1>
+            <p class="slide-subheading">
+                Every stage built from scratch on competition data — zero external models or pretrained weights.
+            </p>
+        </div>
+
+        <!-- Massive Hero Pipeline Graphic taking center stage -->
+        <div class="card-dark" style="flex:1; margin-top:10px; padding:14px 20px; justify-content:space-between;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
+                <div style="font-family:'Newsreader', Georgia, serif; font-size:18px; font-weight:700; color:#ffffff;">
+                    End-to-End System Architecture Blueprint
+                </div>
+                <div class="pill pill-blue">GPU: &lt;9 min · CPU: ~15.5m</div>
+            </div>
+
+            <div class="figure-hero-container" style="max-height: 330px; flex: 1; margin: 8px 0;">
+                <img src="figures/fig3_system_pipeline_flow.jpg" class="figure-hero-img" alt="Pipeline Flow Figure">
+            </div>
+
+            <div style="font-size:12px; color:#cbd5e1; border-top:1px solid rgba(255,255,255,0.1); padding-top:6px; display:flex; justify-content:space-between;">
+                <span>160 Causal Features ➔ Dual-Horizon Trees ➔ Continuous ResNet Manifold ➔ LOO Burst Propagation</span>
+                <span style="color:#34d399; font-weight:700;">Sub-10ms Inference SLA</span>
+            </div>
+        </div>
+
+        <!-- Bottom Blend & Rigor Summary -->
+        <div style="background:#ffffff; border:1px solid #e2e8f0; border-radius:10px; padding:8px 18px; display:flex; justify-content:space-between; align-items:center; font-size:12px; color:#475569; margin-top:8px;">
+            <div>
+                <strong>Blend Formula:</strong> <code>0.48 × Full + 0.52 × 90d → 0.88 × Trees + 0.12 × ResNet → ±30m Diffusion</code>
+            </div>
+            <div>
+                <strong>Pretrained models used:</strong> <span style="color:#ff5722; font-weight:700;">none (0)</span> · 158 numerical + 2 categorical
+            </div>
+        </div>
+
+        <div class="slide-footer">
+            <span>OVERFIT &amp; OVERCAFFEINATED &nbsp;·&nbsp; REACT 2026 DATATHON</span>
+            <span>3</span>
+        </div>
+    </section>
+
+    <!-- ======================================================= -->
+    <!-- SLIDE 4: KEY TECHNICAL DECISIONS                        -->
+    <!-- ======================================================= -->
+    <section class="slide theme-light" id="slide-4">
+        <div>
+            <div class="slide-tag">Key Technical Decisions</div>
+            <h1 class="slide-heading">We trusted only what beat the noise.</h1>
+            <p class="slide-subheading">
+                Rigor cuts both ways: it's how we found real gains, and how we caught ourselves fooling ourselves.
+            </p>
+        </div>
+
+        <div class="grid-2" style="display:grid; grid-template-columns:1fr 1fr; gap:20px; flex:1; margin-top:14px;">
+            <!-- Left: Validation Discipline -->
+            <div class="card-white" style="justify-content:space-between; padding:22px 26px;">
+                <div>
+                    <div style="display:flex; align-items:center; gap:12px; margin-bottom:18px;">
+                        <div class="icon-circle" style="margin-bottom:0; width:44px; height:44px;">
+                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                        </div>
+                        <div style="font-family:'Newsreader', Georgia, serif; font-size:24px; font-weight:800; color:#0b152d;">
+                            Validation discipline
+                        </div>
+                    </div>
+
+                    <div style="display:flex; flex-direction:column; gap:16px; margin-top:10px;">
+                        <div style="display:flex; gap:12px;">
+                            <div style="width:8px; height:8px; border-radius:50%; background:#ff5722; margin-top:6px; flex-shrink:0;"></div>
+                            <div>
+                                <div style="font-weight:700; font-size:15.5px; color:#0b152d; margin-bottom:2px;">Chronological holdout tail</div>
+                                <div style="font-size:13px; color:#64748b; line-height:1.45;">Trained through June 30, tested on July 1–15 (59,465 txns) — strictly ordered by time, mirroring live payment deployment.</div>
+                            </div>
+                        </div>
+
+                        <div style="display:flex; gap:12px;">
+                            <div style="width:8px; height:8px; border-radius:50%; background:#ff5722; margin-top:6px; flex-shrink:0;"></div>
+                            <div>
+                                <div style="font-weight:700; font-size:15.5px; color:#0b152d; margin-bottom:2px;">Deterministic stable sort (Order integrity)</div>
+                                <div style="font-size:13px; color:#64748b; line-height:1.45;">All expanding baselines depend on previous sequence order. Resolved ~20,000 duplicate timestamps via stable <code>mergesort</code> on <code>(timestamp, transaction_id)</code> to eliminate shuffle drift.</div>
+                            </div>
+                        </div>
+
+                        <div style="display:flex; gap:12px;">
+                            <div style="width:8px; height:8px; border-radius:50%; background:#ff5722; margin-top:6px; flex-shrink:0;"></div>
+                            <div>
+                                <div style="font-weight:700; font-size:15.5px; color:#0b152d; margin-bottom:2px;">Zero-leakage &amp; noise floor ($\sigma \approx 0.0020$)</div>
+                                <div style="font-size:13px; color:#64748b; line-height:1.45;">Every feature asserts <code>closed='left'</code> via automated checks. Seed variance measured across 5 seeds; only architectural shifts beating it were kept.</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div style="font-size:13px; color:#64748b; border-top:1px solid #e2e8f0; padding-top:10px; margin-top:10px;">
+                    Holdout PR-AUC accurately predicted Leaderboard gains with a 2.0× translation ratio.
+                </div>
+            </div>
+
+            <!-- Right: What We Rejected -->
+            <div class="card-dark" style="justify-content:space-between; padding:22px 26px;">
+                <div>
+                    <div style="display:flex; align-items:center; gap:12px; margin-bottom:18px;">
+                        <div class="icon-circle coral" style="margin-bottom:0; width:44px; height:44px;">
+                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.5"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+                        </div>
+                        <div style="font-family:'Newsreader', Georgia, serif; font-size:24px; font-weight:800; color:#ffffff;">
+                            What we deliberately rejected
+                        </div>
+                    </div>
+
+                    <div style="display:flex; flex-direction:column; gap:16px; margin-top:10px;">
+                        <div style="display:flex; gap:12px;">
+                            <div style="width:8px; height:8px; border-radius:50%; background:#ff5722; margin-top:6px; flex-shrink:0;"></div>
+                            <div>
+                                <div style="font-weight:700; font-size:15.5px; color:#ffffff; margin-bottom:2px;">Forward-looking features (Peeking ahead)</div>
+                                <div style="font-size:13px; color:#cbd5e1; line-height:1.45;">+0.024 local lift in careless CV — but broke strict temporal-causality rules, so we discarded them completely.</div>
+                            </div>
+                        </div>
+
+                        <div style="display:flex; gap:12px;">
+                            <div style="width:8px; height:8px; border-radius:50%; background:#ff5722; margin-top:6px; flex-shrink:0;"></div>
+                            <div>
+                                <div style="font-weight:700; font-size:15.5px; color:#ffffff; margin-bottom:2px;">Naive class-reweighting (PR calibration)</div>
+                                <div style="font-size:13px; color:#cbd5e1; line-height:1.45;"><code>scale_pos_weight</code> pushed scores to 1.0, distorting ranking calibration under PR-AUC. Unweighted log-loss produced an immediate <strong>+0.026 on the leaderboard</strong>.</div>
+                            </div>
+                        </div>
+
+                        <div style="display:flex; gap:12px;">
+                            <div style="width:8px; height:8px; border-radius:50%; background:#ff5722; margin-top:6px; flex-shrink:0;"></div>
+                            <div>
+                                <div style="font-weight:700; font-size:15.5px; color:#ffffff; margin-bottom:2px;">Monolithic time-decay weighting</div>
+                                <div style="font-size:13px; color:#cbd5e1; line-height:1.45;">Exponential decay degraded split discovery (-0.0031); independent dual-horizon modeling cleanly outperformed it.</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div style="font-size:13px; color:#94a3b8; font-style:italic; border-top:1px solid rgba(255,255,255,0.1); padding-top:10px; margin-top:10px;">
+                    Being wrong quickly, on purpose, is how the real gains stayed real.
+                </div>
+            </div>
+        </div>
+
+        <div style="background:#ffffff; border:1px solid #e2e8f0; border-radius:8px; padding:10px 20px; font-size:13.5px; color:#475569; margin-top:10px;">
+            <strong>Feature Density:</strong> 220+ candidate features pruned to 160 core causal signals by information density and mutual information.
+        </div>
+
+        <div class="slide-footer">
+            <span>OVERFIT &amp; OVERCAFFEINATED &nbsp;·&nbsp; REACT 2026 DATATHON</span>
+            <span>4</span>
+        </div>
+    </section>
+
+    <!-- ======================================================= -->
+    <!-- SLIDE 5: RESULTS & QUALITATIVE RESCUE HERO FIGURE       -->
+    <!-- ======================================================= -->
+    <section class="slide theme-light" id="slide-5">
+        <div>
+            <div class="slide-tag">Results &amp; Qualitative Proof</div>
+            <h1 class="slide-heading">0.56548 Public LB — 3.4× the baseline.</h1>
+            <p class="slide-subheading">
+                Demonstrating concrete qualitative output lift alongside transparent failure mode disclosure.
+            </p>
+        </div>
+
+        <!-- 2-Column Split with Large Qualitative Hero Figure on Right -->
+        <div style="display:grid; grid-template-columns: 0.9fr 1.1fr; gap:18px; flex:1; margin-top:10px;">
+            <!-- Left Column: Metrics & Failure Analysis -->
+            <div style="display:flex; flex-direction:column; gap:10px;">
+                <!-- LB Big Card -->
+                <div class="card-white" style="padding:12px 18px; flex-direction:row; align-items:center; justify-content:space-between;">
+                    <div>
+                        <div class="huge-stat coral" style="font-size:36px; margin:0;">0.56548</div>
+                        <div style="font-size:12px; font-weight:700; color:#0b152d;">Public Leaderboard Score</div>
+                    </div>
+                    <div style="text-align:right;">
+                        <div class="pill pill-green" style="font-size:13px; padding:4px 10px;">3.40× Baseline</div>
+                        <div style="font-size:11px; color:#64748b; margin-top:4px;">Holdout: <strong>0.5359</strong></div>
+                    </div>
+                </div>
+
+                <!-- Milestone SVG Chart -->
+                <div class="card-white" style="flex:1; padding:12px 16px; justify-content:space-between;">
+                    <div style="font-weight:700; font-size:12.5px; color:#0b152d;">
+                        Local PR-AUC by Milestone (Holdout July 1–15)
+                    </div>
+
+                    <div style="width:100%; height:130px; display:flex; align-items:center; justify-content:center;">
+                        <svg viewBox="0 0 320 135" style="width:100%; height:100%; overflow:visible;">
+                            <line x1="20" y1="105" x2="300" y2="105" stroke="#e2e8f0" stroke-width="1"/>
+                            <polyline fill="none" stroke="#ff5722" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"
+                                points="30,105 75,42 120,38 165,35 210,34 255,32 295,28" />
+                            <circle cx="30" cy="105" r="4" fill="#ff5722" />
+                            <text x="30" y="120" font-size="8.5" font-family="'JetBrains Mono'" text-anchor="middle" fill="#64748b">0.1664</text>
+                            <circle cx="75" cy="42" r="4" fill="#ff5722" />
+                            <text x="75" y="32" font-size="8.5" font-family="'JetBrains Mono'" font-weight="700" text-anchor="middle" fill="#0b152d">0.5090</text>
+                            <circle cx="120" cy="38" r="3.5" fill="#ff5722" />
+                            <circle cx="165" cy="35" r="3.5" fill="#ff5722" />
+                            <circle cx="210" cy="34" r="3.5" fill="#ff5722" />
+                            <circle cx="255" cy="32" r="3.5" fill="#ff5722" />
+                            <circle cx="295" cy="28" r="5" fill="#ff5722" stroke="#ffffff" stroke-width="2" />
+                            <text x="295" y="18" font-size="9" font-family="'JetBrains Mono'" font-weight="800" text-anchor="middle" fill="#ff5722">0.5359</text>
+                            <!-- Labels -->
+                            <text x="30" y="130" font-size="8" text-anchor="middle" fill="#94a3b8">Base</text>
+                            <text x="75" y="130" font-size="8" text-anchor="middle" fill="#94a3b8">Feat</text>
+                            <text x="120" y="130" font-size="8" text-anchor="middle" fill="#94a3b8">Calib</text>
+                            <text x="165" y="130" font-size="8" text-anchor="middle" fill="#94a3b8">Prun</text>
+                            <text x="210" y="130" font-size="8" text-anchor="middle" fill="#94a3b8">Trees</text>
+                            <text x="255" y="130" font-size="8" text-anchor="middle" fill="#94a3b8">ResNet</text>
+                            <text x="295" y="130" font-size="8" text-anchor="middle" font-weight="700" fill="#ff5722">Propag</text>
+                        </svg>
+                    </div>
+
+                    <div style="font-size:11px; color:#64748b;">
+                        Trained through June 30, verified across 5 seeds.
+                    </div>
+                </div>
+
+                <!-- Transparent Limits -->
+                <div class="card-white" style="padding:10px 14px; border-left:3px solid #ff5722;">
+                    <div style="font-weight:800; font-size:11.5px; color:#0b152d; margin-bottom:2px; display:flex; align-items:center; gap:6px;">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#ff5722" stroke-width="2.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+                        Transparent Failure Modes (Error Analysis)
+                    </div>
+                    <div style="font-size:10.5px; color:#64748b; line-height:1.35;">
+                        • <strong>Lone-Wolf Burner Attacks:</strong> Single hits with 0 prior baselines or siblings rely on raw model.<br>
+                        • <strong>Real-Time SLA:</strong> Causal 1-sided lookback yields 91% of lift without batching delay.
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Column: Massive Qualitative Proof Figure -->
+            <div class="card-dark" style="padding:14px 18px; justify-content:space-between;">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div style="font-family:'Newsreader', Georgia, serif; font-size:18px; font-weight:700; color:#ffffff;">
+                        Qualitative Proof: Coordinated Takeover Rescue
+                    </div>
+                    <span class="pill pill-coral">±30m LOO Window</span>
+                </div>
+
+                <!-- Big Image -->
+                <div class="figure-hero-container" style="max-height: 310px; flex: 1; margin: 8px 0;">
+                    <img src="figures/fig1_fraud_burst_rescue.jpg" class="figure-hero-img" alt="Fraud Burst Rescue Figure">
+                </div>
+
+                <div style="background:#122044; border-radius:6px; padding:8px 12px; font-size:11.5px; color:#cbd5e1; line-height:1.4;">
+                    <strong style="color:#ffffff;">The Rescue Mechanism:</strong> Tx 1 raw $P=0.38$ (False Negative) is rescued by sibling average ($0.69$) to <strong style="color:#34d399;">P=0.535 (Caught Fraud!)</strong>.<br>
+                    <span style="color:#94a3b8;"><strong>95.3%</strong> of test transactions have 0 siblings and pass through 100% untouched.</span>
+                </div>
+            </div>
+        </div>
+
+        <div class="slide-footer">
+            <span>OVERFIT &amp; OVERCAFFEINATED &nbsp;·&nbsp; REACT 2026 DATATHON</span>
+            <span>5</span>
+        </div>
+    </section>
+
+    <!-- ======================================================= -->
+    <!-- SLIDE 6: IMPACT & CLOSE (THEME DARK)                    -->
+    <!-- ======================================================= -->
+    <section class="slide theme-dark" id="slide-6">
+        <div>
+            <div style="display:flex; align-items:center; gap:12px; margin-bottom: 16px;">
+                <div style="width:36px; height:36px; border-radius:50%; background:rgba(255,87,34,0.15); display:flex; align-items:center; justify-content:center;">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#ff5722" stroke-width="2.5"><path d="M9 18h6"/><path d="M10 22h4"/><path d="M15.09 14c.18-.98.65-1.74 1.41-2.5A4.65 4.65 0 0 0 18 8 6 6 0 0 0 6 8c0 1 .23 2.23 1.5 3.5A4.61 4.61 0 0 1 8.91 14"/></svg>
+                </div>
+                <div style="font-size:11px; font-weight:700; letter-spacing:2px; text-transform:uppercase; color:#ff5722;">
+                    Impact &amp; Close
+                </div>
+            </div>
+
+            <h1 style="font-family:'Newsreader', Georgia, serif; font-size: 42px; font-weight: 800; letter-spacing: -0.5px; line-height: 1.15; max-width: 900px; margin-bottom: 12px;">
+                Fraud doesn't hold still. Neither should the model that catches it.
+            </h1>
+            <p style="font-size: 15.5px; color: #cbd5e1; max-width: 840px; line-height: 1.5;">
+                Causally-safe features and burst-aware propagation aren't just leaderboard tricks — the same design could run in a live payment pipeline, adapting to new attack patterns without waiting for a retrain.
+            </p>
+        </div>
+
+        <!-- Production Precision vs Recall Operational Tiers -->
+        <div class="card-navy-glass" style="padding: 14px 20px; margin: 10px 0;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                <div style="font-family:'Newsreader', Georgia, serif; font-size:18px; font-weight:700; color:#ffffff;">
+                    Production Precision–Recall Tradeoff: Tiered Operational Gateway
+                </div>
+                <span class="pill pill-coral" style="font-size:11px;">Zero Friction for 95%+ of Users</span>
+            </div>
+
+            <div style="display:grid; grid-template-columns: repeat(3, 1fr); gap: 12px;">
+                <div style="background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.3); border-radius: 8px; padding: 10px 14px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                        <span style="font-weight:700; font-size:13.5px; color:#f87171;">Tier 1: Auto-Block</span>
+                        <span style="font-family:'JetBrains Mono'; font-size:11px; color:#fca5a5; font-weight:700;">P &gt; 0.80</span>
+                    </div>
+                    <div style="font-size:12px; color:#cbd5e1; line-height:1.4;"><strong>96%+ Precision.</strong> Automatic decline for card-mule burst attacks with near-zero false-positive business cost.</div>
+                </div>
+
+                <div style="background: rgba(245,158,11,0.12); border: 1px solid rgba(245,158,11,0.3); border-radius: 8px; padding: 10px 14px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                        <span style="font-weight:700; font-size:13.5px; color:#fbbf24;">Tier 2: Step-Up 2FA</span>
+                        <span style="font-family:'JetBrains Mono'; font-size:11px; color:#fde68a; font-weight:700;">0.35 ≤ P ≤ 0.80</span>
+                    </div>
+                    <div style="font-size:12px; color:#cbd5e1; line-height:1.4;"><strong>Max Recall Frontier.</strong> Triggers SMS OTP for rescued attack siblings; stops fraud without declining valid cardholders.</div>
+                </div>
+
+                <div style="background: rgba(52,211,153,0.12); border: 1px solid rgba(52,211,153,0.3); border-radius: 8px; padding: 10px 14px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+                        <span style="font-weight:700; font-size:13.5px; color:#34d399;">Tier 3: Instant Pass</span>
+                        <span style="font-family:'JetBrains Mono'; font-size:11px; color:#a7f3d0; font-weight:700;">P &lt; 0.35</span>
+                    </div>
+                    <div style="font-size:12px; color:#cbd5e1; line-height:1.4;"><strong>Sub-10ms Gateway.</strong> 95.3% of normal transactions clear seamlessly with zero customer friction.</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 3 Stat Pillars -->
+        <div class="card-navy-glass" style="padding: 14px 28px; display: flex; align-items: center; justify-content: space-around;">
+            <div style="text-align: center; flex: 1;">
+                <div class="huge-stat" style="font-size: 38px; margin-bottom: 2px;">0.56548</div>
+                <div class="stat-label" style="font-size: 12px; color:#94a3b8;">Public Leaderboard</div>
+            </div>
+            <div style="width: 1px; height: 42px; background: rgba(255,255,255,0.15);"></div>
+            <div style="text-align: center; flex: 1;">
+                <div class="huge-stat coral" style="font-size: 38px; margin-bottom: 2px;">3.4×</div>
+                <div class="stat-label" style="font-size: 12px; color:#94a3b8;">the baseline PR-AUC</div>
+            </div>
+            <div style="width: 1px; height: 42px; background: rgba(255,255,255,0.15);"></div>
+            <div style="text-align: center; flex: 1;">
+                <div class="huge-stat" style="font-size: 38px; margin-bottom: 2px;"><span style="font-family: system-ui, -apple-system, sans-serif; font-weight: 600;">&lt;</span> 10ms</div>
+                <div class="stat-label" style="font-size: 12px; color:#94a3b8;">Sub-10ms scoring latency</div>
+            </div>
+        </div>
+
+        <!-- Thank You Banner -->
+        <div style="text-align: center; margin-top: 10px;">
+            <div style="font-family:'Newsreader', Georgia, serif; font-size: 20px; font-style: italic; color: #cbd5e1;">
+                Thank you — happy to take questions.
+            </div>
+        </div>
+
+        <div class="slide-footer">
+            <span>OVERFIT &amp; OVERCAFFEINATED &nbsp;·&nbsp; REACT 2026 DATATHON</span>
+            <span>6</span>
+        </div>
+    </section>
+
+    <!-- ======================================================= -->
+    <!-- SLIDE 7: APPENDIX DIVIDER (THEME DARK)                  -->
+    <!-- ======================================================= -->
+    <section class="slide theme-dark" id="slide-7">
+        <div style="margin: auto 0; text-align: center;">
+            <div style="font-size: 11px; font-weight: 700; letter-spacing: 2px; text-transform: uppercase; color: #38bdf8; margin-bottom: 10px;">
+                Technical Deep-Dive · Backup Detail for Q&amp;A
+            </div>
+            <h1 style="font-family:'Newsreader', Georgia, serif; font-size: 46px; font-weight: 800; color: #ffffff; margin-bottom: 14px;">
+                Appendix
+            </h1>
+            <p style="font-size: 15.5px; color: #94a3b8; max-width: 600px; margin: 0 auto 24px auto;">
+                Not part of the timed 3-minute talk — reference only if judges want more.
+            </p>
+            <div style="display:flex; justify-content:center; gap:14px;">
+                <span class="pill pill-blue" style="font-size:11.5px; padding:5px 12px;">Slide 8: 160 Causal Features</span>
+                <span class="pill pill-blue" style="font-size:11.5px; padding:5px 12px;">Slide 9: Dual-Horizon &amp; ResNet</span>
+                <span class="pill pill-coral" style="font-size:11.5px; padding:5px 12px;">Slide 10: Sibling Multipliers</span>
+                <span class="pill pill-blue" style="font-size:11.5px; padding:5px 12px;">Slide 11: Milestone Ledger</span>
+            </div>
+        </div>
+
+        <div class="slide-footer">
+            <span>OVERFIT &amp; OVERCAFFEINATED &nbsp;·&nbsp; REACT 2026 DATATHON</span>
+            <span>7</span>
+        </div>
+    </section>
+
+    <!-- ======================================================= -->
+    <!-- SLIDE 8: APPENDIX A - 160 FEATURES & GRAPH NOVELTY HERO -->
+    <!-- ======================================================= -->
+    <section class="slide theme-light" id="slide-8">
+        <div>
+            <div class="slide-tag">Appendix A · Feature Engineering</div>
+            <h1 class="slide-heading">160 features. All strictly past-only.</h1>
+            <p class="slide-subheading">
+                Pruned from 220+ candidates by information density. Point-in-time causality mechanically asserted.
+            </p>
+        </div>
+
+        <div style="display:grid; grid-template-columns: 0.95fr 1.05fr; gap:18px; flex:1; margin-top:12px;">
+            <!-- Left: 3 Feature Family Summary Cards filling full height -->
+            <div style="display:flex; flex-direction:column; gap:10px;">
+                <div class="card-white" style="flex:1; padding:14px 18px; display:flex; flex-direction:column; justify-content:center;">
+                    <div style="font-weight:800; font-size:16px; color:#0b152d; margin-bottom:3px;">Scale-free personal baselines</div>
+                    <div style="font-family:'JetBrains Mono'; font-size:12px; color:#ff5722; margin-bottom:5px;">cust_amt_ratio · cust_amt_robust_z · log_amt_diff</div>
+                    <div style="font-size:13.5px; color:#64748b; line-height:1.45;">Amount normalized against personal history rather than raw currency. #1 highest gain feature family (+0.14 PR-AUC).</div>
+                </div>
+
+                <div class="card-white" style="flex:1; padding:14px 18px; display:flex; flex-direction:column; justify-content:center;">
+                    <div style="font-weight:800; font-size:16px; color:#0b152d; margin-bottom:3px;">Trailing ladders &amp; velocity bursts</div>
+                    <div style="font-family:'JetBrains Mono'; font-size:12px; color:#ff5722; margin-bottom:5px;">10 windows (5m to 168h) · cust_burst_accel</div>
+                    <div style="font-size:13.5px; color:#64748b; line-height:1.45;">Sub-hour lookbacks catch rapid bot strikes; multi-day ladders measure sudden acceleration over normal weekly cadence.</div>
+                </div>
+
+                <div class="card-white" style="flex:1; padding:14px 18px; display:flex; flex-direction:column; justify-content:center;">
+                    <div style="font-weight:800; font-size:16px; color:#0b152d; margin-bottom:3px;">Cross-entity interactions (ATO signals)</div>
+                    <div style="font-family:'JetBrains Mono'; font-size:12px; color:#ff5722; margin-bottom:5px;">device_nunique_cust_prior · is_new_device</div>
+                    <div style="font-size:13.5px; color:#64748b; line-height:1.45;">Identifies card-mule devices shared across multiple customer identities without incurring graph database latency.</div>
+                </div>
+            </div>
+
+            <!-- Right: Bipartite Graph Hero Figure -->
+            <div class="card-dark" style="padding:16px 20px; justify-content:space-between;">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <div style="font-family:'Newsreader', Georgia, serif; font-size:19px; font-weight:700; color:#ffffff;">
+                        Bipartite Novelty: Device Sharing &amp; Card-Mule Rings
+                    </div>
+                    <span class="pill pill-coral">ATO Signals</span>
+                </div>
+
+                <div class="figure-hero-container" style="max-height: 310px; flex: 1; margin: 8px 0;">
+                    <img src="figures/fig4_bipartite_fraud_ring.jpg" class="figure-hero-img" alt="Bipartite Fraud Ring Figure">
+                </div>
+
+                <div style="font-size:12.5px; color:#cbd5e1; border-top:1px solid rgba(255,255,255,0.1); padding-top:8px;">
+                    Tracks <code>device_id_nunique_customer_for_device_prior</code> and <code>is_new_device_for_customer</code> without graph DB overhead.
+                </div>
+            </div>
+        </div>
+
+        <div style="background:#ffffff; border:1px solid #e2e8f0; border-radius:8px; padding:8px 16px; font-size:12.5px; color:#475569; margin-top:10px; display:flex; justify-content:space-between; align-items:center;">
+            <div>
+                <strong>Sequence Invariant:</strong> All expanding counters and baselines are order-dependent. Non-label train+test are concatenated and stable-mergesorted on <code>(timestamp, transaction_id)</code>.
+            </div>
+            <div style="color:#ff5722; font-weight:700; font-size:12px;">
+                Strictly past-only (closed='left')
+            </div>
+        </div>
+
+        <div class="slide-footer">
+            <span>OVERFIT &amp; OVERCAFFEINATED &nbsp;·&nbsp; REACT 2026 DATATHON</span>
+            <span>8</span>
+        </div>
+    </section>
+
+    <!-- ======================================================= -->
+    <!-- SLIDE 9: APPENDIX B - TWO MODELS (THEME LIGHT)          -->
+    <!-- ======================================================= -->
+    <section class="slide theme-light" id="slide-9">
+        <div>
+            <div class="slide-tag">Appendix B · Model Architecture</div>
+            <h1 class="slide-heading">Two very different models, one blend.</h1>
+            <p class="slide-subheading">
+                Trees capture sharp categorical rules; the neural net smooths the boundaries between them.
+            </p>
+        </div>
+
+        <div class="grid-2" style="display:grid; grid-template-columns:1fr 1fr; gap:20px; flex:1; margin-top:14px;">
+            <!-- Left: LightGBM -->
+            <div class="card-white" style="justify-content:space-between; padding:22px 26px;">
+                <div>
+                    <div style="font-family:'Newsreader', Georgia, serif; font-size:24px; font-weight:800; color:#0b152d; margin-bottom:14px;">
+                        Dual-Horizon LightGBM
+                    </div>
+
+                    <div style="display:flex; flex-direction:column; gap:14px;">
+                        <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:12px 16px;">
+                            <div style="font-weight:800; font-size:15.5px; color:#0b152d; margin-bottom:2px;">1. Full-Train Horizon (Jan 1 – Jul 15)</div>
+                            <div style="font-family:'JetBrains Mono'; font-size:12.5px; color:#ff5722; margin-bottom:5px;">882 rounds · 127 leaves · lr 0.02 · feat.frac 0.85 · min_leaf 50</div>
+                            <div style="font-size:13.5px; color:#64748b; line-height:1.45;">Trained on all 731k rows. Deep trees anchor long-term customer baselines and historical merchant profiles.</div>
+                        </div>
+
+                        <div style="background:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:12px 16px;">
+                            <div style="font-weight:800; font-size:15.5px; color:#0b152d; margin-bottom:2px;">2. 90-Day Specialist (Apr 16 – Jul 15)</div>
+                            <div style="font-family:'JetBrains Mono'; font-size:12.5px; color:#ff5722; margin-bottom:5px;">433 rounds · 63 leaves · lr 0.02 · feat.frac 0.75 · min_leaf 100</div>
+                            <div style="font-size:13.5px; color:#64748b; line-height:1.45;">Trained only on recent data. Constrained trees adapt directly to rapid summer velocity surges and concept drift.</div>
+                        </div>
+
+                        <div style="font-size:13px; color:#475569; line-height:1.5; padding:0 4px;">
+                            <strong>Why not sample weighting?</strong> Exponential time-decay degraded split purity on stable features (-0.0031); independent dual-horizon models cleanly preserve both regimes.
+                        </div>
+                    </div>
+                </div>
+
+                <div style="background:#f0fdf4; border:1px solid #bbf7d0; border-radius:8px; padding:10px 16px; font-size:13.5px; color:#166534; font-weight:700; margin-top:10px;">
+                    Horizon Blend: 0.48 × Full + 0.52 × 90d → 0.5284 holdout PR-AUC (+0.008)
+                </div>
+            </div>
+
+            <!-- Right: Tabular ResNet -->
+            <div class="card-dark" style="justify-content:space-between; padding:22px 26px;">
+                <div>
+                    <div style="font-family:'Newsreader', Georgia, serif; font-size:24px; font-weight:800; color:#ffffff; margin-bottom:14px;">
+                        Tabular ResNet
+                    </div>
+
+                    <div style="display:flex; flex-direction:column; gap:14px;">
+                        <div>
+                            <div style="font-weight:700; font-size:15.5px; color:#ffffff; margin-bottom:3px;">Continuous Input Representation</div>
+                            <div style="font-size:13.5px; color:#cbd5e1; line-height:1.45;">158 numerical features normalized via robust quantile scaling; 2 categorical entities mapped to continuous latent embeddings.</div>
+                        </div>
+
+                        <div style="background:#122044; border:1px solid rgba(255,255,255,0.08); border-radius:8px; padding:12px 16px;">
+                            <div style="font-weight:700; font-size:15px; color:#38bdf8; margin-bottom:4px;">3 × Residual Bottleneck Blocks</div>
+                            <div style="font-family:'JetBrains Mono'; font-size:12px; color:#ffffff; margin-bottom:4px;">LayerNorm → Linear(256,512) → GELU → Dropout(0.15) → Linear(512,256) + Skip</div>
+                            <div style="font-size:12.5px; color:#94a3b8; line-height:1.4;">Skip connections allow stable gradient flow through deep tabular manifolds without vanishing.</div>
+                        </div>
+
+                        <div>
+                            <div style="font-weight:700; font-size:15.5px; color:#ffffff; margin-bottom:3px;">Continuous Manifold Complementarity</div>
+                            <div style="font-size:13.5px; color:#cbd5e1; line-height:1.45;">Trees create axis-aligned step functions; ResNet learns smooth probability manifolds, catching subtle non-linear boundary anomalies.</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div style="background:rgba(56,189,248,0.12); border:1px solid rgba(56,189,248,0.3); border-radius:8px; padding:10px 16px; font-size:13.5px; color:#38bdf8; font-weight:700; margin-top:10px;">
+                    Ensemble Blend: 0.88 × Trees + 0.12 × ResNet → 0.5298 holdout PR-AUC
+                </div>
+            </div>
+        </div>
+
+        <div class="slide-footer">
+            <span>OVERFIT &amp; OVERCAFFEINATED &nbsp;·&nbsp; REACT 2026 DATATHON</span>
+            <span>9</span>
+        </div>
+    </section>
+
+    <!-- ======================================================= -->
+    <!-- SLIDE 10: APPENDIX C - SIBLING ODDS (THEME LIGHT)       -->
+    <!-- ======================================================= -->
+    <section class="slide theme-light" id="slide-10">
+        <div>
+            <div class="slide-tag">Appendix C · Post-Processing Math</div>
+            <h1 class="slide-heading">Why propagation works: fraud has siblings.</h1>
+            <p class="slide-subheading">
+                A confirmed fraud sharply raises the odds its near-in-time neighbors are fraud too.
+            </p>
+        </div>
+
+        <div class="grid-2" style="display:grid; grid-template-columns:1fr 1fr; gap:20px; flex:1; margin-top:14px;">
+            <!-- Left: Exact Bar Chart Recreation from Teammate Slide 10 -->
+            <div class="card-white" style="justify-content:space-between; padding:22px 26px;">
+                <div>
+                    <div style="display:flex; align-items:center; gap:12px; margin-bottom:14px;">
+                        <div class="icon-circle" style="margin-bottom:0; width:44px; height:44px;">
+                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#ffffff" stroke-width="2.5"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" y1="13.51" x2="15.42" y2="17.49"/><line x1="15.41" y1="6.51" x2="8.59" y2="10.49"/></svg>
+                        </div>
+                        <div style="font-family:'Newsreader', Georgia, serif; font-size:22px; font-weight:800; color:#0b152d;">
+                            P(sibling is fraud | current is fraud)
+                        </div>
+                    </div>
+
+                    <!-- SVG Bar Chart -->
+                    <div style="width:100%; height:185px; display:flex; align-items:flex-end; justify-content:space-around; border-bottom:2px solid #e2e8f0; padding-bottom:12px; margin-top:24px;">
+                        <div style="display:flex; flex-direction:column; align-items:center; gap:6px;">
+                            <div style="font-family:'JetBrains Mono'; font-weight:800; font-size:15px; color:#0b152d;">1.00×</div>
+                            <div style="width:72px; height:38px; background:#94a3b8; border-radius:6px 6px 0 0;"></div>
+                            <div style="font-size:13px; color:#64748b; margin-top:6px; font-weight:600;">Baseline rate</div>
+                        </div>
+                        <div style="display:flex; flex-direction:column; align-items:center; gap:6px;">
+                            <div style="font-family:'JetBrains Mono'; font-weight:800; font-size:15px; color:#0b152d;">2.63×</div>
+                            <div style="width:72px; height:100px; background:#ffab91; border-radius:6px 6px 0 0;"></div>
+                            <div style="font-size:13px; color:#64748b; margin-top:6px; font-weight:600;">Same customer</div>
+                        </div>
+                        <div style="display:flex; flex-direction:column; align-items:center; gap:6px;">
+                            <div style="font-family:'JetBrains Mono'; font-weight:800; font-size:15px; color:#ff5722;">3.87×</div>
+                            <div style="width:72px; height:147px; background:#ff5722; border-radius:6px 6px 0 0;"></div>
+                            <div style="font-size:13px; font-weight:700; color:#ff5722; margin-top:6px;">Same device</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div style="font-size:12.5px; color:#64748b; border-top:1px solid #e2e8f0; padding-top:10px; margin-top:10px;">
+                    Audited empirically across 731,942 training transactions in 60-minute sliding windows.
+                </div>
+            </div>
+
+            <!-- Right: The Propagation Rule -->
+            <div class="card-dark" style="justify-content:space-between; padding:22px 26px;">
+                <div>
+                    <div style="font-family:'Newsreader', Georgia, serif; font-size:24px; font-weight:800; color:#ffffff; margin-bottom:14px;">
+                        The propagation rule
+                    </div>
+
+                    <div style="background:#122044; border:1px solid rgba(255,255,255,0.08); border-radius:8px; padding:14px 18px; font-family:'JetBrains Mono'; font-size:13px; color:#ffffff; line-height:1.6; margin-bottom:14px;">
+                        Pfinal(i) = (1 - w) · Praw(i) + w · avg( PLOO,device(i), PLOO,customer(i) )<br>
+                        <span style="color:#ff5722; font-size:12px; font-weight:700;">w = 0.50 · sliding ±30-minute window (60-min span)</span>
+                    </div>
+
+                    <div style="display:flex; flex-direction:column; gap:12px; font-size:13.5px; color:#cbd5e1; line-height:1.45;">
+                        <div style="display:flex; gap:10px;">
+                            <div style="width:7px; height:7px; border-radius:50%; background:#ff5722; margin-top:6px; flex-shrink:0;"></div>
+                            <div><strong>Singleton transactions:</strong> 95.3% of test rows have no in-window neighbor and pass through completely unchanged.</div>
+                        </div>
+                        <div style="display:flex; gap:10px;">
+                            <div style="width:7px; height:7px; border-radius:50%; background:#ff5722; margin-top:6px; flex-shrink:0;"></div>
+                            <div><strong>Cluster adjustments:</strong> Only the 4.7% of transactions sitting inside a real time-cluster get updated.</div>
+                        </div>
+                        <div style="display:flex; gap:10px;">
+                            <div style="width:7px; height:7px; border-radius:50%; background:#ff5722; margin-top:6px; flex-shrink:0;"></div>
+                            <div><strong>Zero test leakage:</strong> Touches zero test labels and fits zero parameters — purely structural Bayes.</div>
+                        </div>
+                        <div style="display:flex; gap:10px;">
+                            <div style="width:7px; height:7px; border-radius:50%; background:#38bdf8; margin-top:6px; flex-shrink:0;"></div>
+                            <div><strong>High Throughput:</strong> Single-pass sort-and-scan executes in 0.4s across all 262k test transactions.</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div style="font-size:13px; color:#38bdf8; border-top:1px solid rgba(255,255,255,0.1); padding-top:10px; margin-top:12px; font-weight:700;">
+                    Validation Impact: Holdout PR-AUC 0.5298 → <strong>0.5359</strong> | Public LB: <strong>0.56548</strong>
+                </div>
+            </div>
+        </div>
+
+        <div class="slide-footer">
+            <span>OVERFIT &amp; OVERCAFFEINATED &nbsp;·&nbsp; REACT 2026 DATATHON</span>
+            <span>10</span>
+        </div>
+    </section>
+
+    <!-- ======================================================= -->
+    <!-- SLIDE 11: APPENDIX D - MILESTONE LEDGER (THEME LIGHT)   -->
+    <!-- ======================================================= -->
+    <section class="slide theme-light" id="slide-11">
+        <div>
+            <div class="slide-tag">Appendix D · Validation Ledger</div>
+            <h1 class="slide-heading">The full milestone ledger.</h1>
+            <p class="slide-subheading">
+                Every technique that shipped, and exactly what it was worth — locally and on the public leaderboard.
+            </p>
+        </div>
+
+        <div class="grid-2" style="display:grid; grid-template-columns:1.08fr 0.92fr; gap:20px; flex:1; margin-top:14px;">
+            <!-- Left: Table -->
+            <div class="card-white" style="justify-content:space-between; padding: 20px 24px;">
+                <table style="width:100%; border-collapse:collapse; font-size:13px;">
+                    <thead>
+                        <tr style="border-bottom:2px solid #e2e8f0; text-align:left; color:#64748b;">
+                            <th style="padding:7px 6px; font-weight:700;">#</th>
+                            <th style="padding:7px 6px; font-weight:700;">Milestone</th>
+                            <th style="padding:7px 6px; font-weight:700;">What changed</th>
+                            <th style="padding:7px 6px; font-weight:700;">Holdout</th>
+                            <th style="padding:7px 6px; font-weight:700;">Public LB</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr style="border-bottom:1px solid #f1f5f9;">
+                            <td style="padding:7px 6px; color:#94a3b8;">0</td>
+                            <td style="padding:7px 6px; font-weight:700;">Baseline</td>
+                            <td style="padding:7px 6px; color:#64748b;">Raw tabular features, default LightGBM</td>
+                            <td style="padding:7px 6px; font-family:'JetBrains Mono'; font-size:12.5px;">0.1664</td>
+                            <td style="padding:7px 6px; font-family:'JetBrains Mono'; font-size:12.5px;">0.1664</td>
+                        </tr>
+                        <tr style="border-bottom:1px solid #f1f5f9;">
+                            <td style="padding:7px 6px; color:#94a3b8;">1</td>
+                            <td style="padding:7px 6px; font-weight:700;">Features</td>
+                            <td style="padding:7px 6px; color:#64748b;">Expanding baselines, MAD z-scores, windows</td>
+                            <td style="padding:7px 6px; font-family:'JetBrains Mono'; font-size:12.5px;">0.5090</td>
+                            <td style="padding:7px 6px; font-family:'JetBrains Mono'; font-size:12.5px;">0.5105</td>
+                        </tr>
+                        <tr style="border-bottom:1px solid #f1f5f9;">
+                            <td style="padding:7px 6px; color:#94a3b8;">2</td>
+                            <td style="padding:7px 6px; font-weight:700;">Calibration</td>
+                            <td style="padding:7px 6px; color:#64748b;">Removed naive scale_pos_weight</td>
+                            <td style="padding:7px 6px; font-family:'JetBrains Mono'; font-size:12.5px;">0.5204</td>
+                            <td style="padding:7px 6px; font-family:'JetBrains Mono'; font-size:12.5px;">0.5395</td>
+                        </tr>
+                        <tr style="border-bottom:1px solid #f1f5f9;">
+                            <td style="padding:7px 6px; color:#94a3b8;">3</td>
+                            <td style="padding:7px 6px; font-weight:700;">Pruning</td>
+                            <td style="padding:7px 6px; color:#64748b;">Density pruning to Top 160 core features</td>
+                            <td style="padding:7px 6px; font-family:'JetBrains Mono'; font-size:12.5px;">0.5269</td>
+                            <td style="padding:7px 6px; color:#94a3b8;">—</td>
+                        </tr>
+                        <tr style="border-bottom:1px solid #f1f5f9;">
+                            <td style="padding:7px 6px; color:#94a3b8;">4</td>
+                            <td style="padding:7px 6px; font-weight:700;">Dual-Horizon</td>
+                            <td style="padding:7px 6px; color:#64748b;">48% full-train + 52% 90-day specialist</td>
+                            <td style="padding:7px 6px; font-family:'JetBrains Mono'; font-size:12.5px;">0.5284</td>
+                            <td style="padding:7px 6px; color:#94a3b8;">—</td>
+                        </tr>
+                        <tr style="border-bottom:1px solid #f1f5f9;">
+                            <td style="padding:7px 6px; color:#94a3b8;">5</td>
+                            <td style="padding:7px 6px; font-weight:700;">Tree-Neural</td>
+                            <td style="padding:7px 6px; color:#64748b;">88% trees + 12% Tabular ResNet</td>
+                            <td style="padding:7px 6px; font-family:'JetBrains Mono'; font-size:12.5px;">0.5298</td>
+                            <td style="padding:7px 6px; color:#94a3b8;">—</td>
+                        </tr>
+                        <tr style="background:#fff7ed; font-weight:700;">
+                            <td style="padding:7px 6px; color:#ff5722;">6</td>
+                            <td style="padding:7px 6px; color:#ff5722;">Propagation</td>
+                            <td style="padding:7px 6px; color:#ff5722;">Sliding LOO diffusion over ±30m window</td>
+                            <td style="padding:7px 6px; font-family:'JetBrains Mono'; font-size:12.5px; color:#ff5722;">0.5359</td>
+                            <td style="padding:7px 6px; font-family:'JetBrains Mono'; font-size:12.5px; color:#ff5722;">0.56548</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <div style="font-size:12px; color:#94a3b8; border-top:1px solid #f1f5f9; padding-top:8px; margin-top:8px;">
+                    Dashes mark iterations verified on the local chronological holdout without burning public leaderboard submissions.
+                </div>
+            </div>
+
+            <!-- Right: Noise Floor & Alternatives -->
+            <div class="card-white" style="justify-content:space-between; padding: 22px 26px;">
+                <div>
+                    <div style="font-family:'Newsreader', Georgia, serif; font-size:22px; font-weight:800; color:#0b152d; margin-bottom:16px;">
+                        Noise Floor &amp; Discarded Alternatives
+                    </div>
+
+                    <div style="display:flex; flex-direction:column; gap:16px; font-size:13.5px; color:#64748b; line-height:1.5;">
+                        <div>
+                            <strong style="color:#0b152d;">• Empirical Noise Floor ($\sigma \approx 0.0020$):</strong><br>
+                            Measured across 5 random seeds. Every reported architecture milestone cleared this threshold before adoption.
+                        </div>
+
+                        <div>
+                            <strong style="color:#0b152d;">• Graph Neural Networks (GNNs):</strong><br>
+                            Bipartite GraphSAGE/GAT added &gt;45 min training latency and overfit static edges without beating causal tabular baselines.
+                        </div>
+
+                        <div>
+                            <strong style="color:#0b152d;">• CatBoost &amp; XGBoost:</strong><br>
+                            3× slower on 160 causal features; marginal lift (+0.0003) did not justify added deployment complexity.
+                        </div>
+
+                        <div>
+                            <strong style="color:#0b152d;">• Multi-Tier Metamodel Stacking:</strong><br>
+                            Complex secondary blending models suffered severe test drift across the 2-month blind gap and failed OOT tests.
+                        </div>
+                    </div>
+                </div>
+
+                <div style="font-size:12.5px; color:#0b152d; font-weight:600; border-top:1px solid #e2e8f0; padding-top:10px; margin-top:12px;">
+                    Strict validation discipline prevented overfitting to random leaderboard fluctuations.
+                </div>
+            </div>
+        </div>
+
+        <div class="slide-footer">
+            <span>OVERFIT &amp; OVERCAFFEINATED &nbsp;·&nbsp; REACT 2026 DATATHON</span>
+            <span>11</span>
+        </div>
+    </section>
+
+</div>
+
+<div class="nav-hint">Use ← / → or Space to navigate &nbsp;|&nbsp; Press 'F' for Fullscreen &nbsp;|&nbsp; Press 1–9, 0, A to jump</div>
+
+<script>
+    let currentSlide = 1;
+    const totalSlides = 11;
+
+    function showSlide(index) {
+        if (index < 1) index = 1;
+        if (index > totalSlides) index = totalSlides;
+        currentSlide = index;
+
+        document.querySelectorAll('.slide').forEach((el, idx) => {
+            el.classList.toggle('active', (idx + 1) === currentSlide);
+        });
+
+        const counterEl = document.getElementById('slide-num');
+        if (currentSlide <= 6) {
+            counterEl.textContent = `Slide ${currentSlide} / 6 (Main)`;
+        } else {
+            counterEl.textContent = `Slide ${currentSlide} / 11 (Appendix)`;
+        }
+
+        document.getElementById('progress-line').style.width = `${(currentSlide / totalSlides) * 100}%`;
+    }
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'ArrowRight' || e.key === ' ' || e.key === 'PageDown') {
+            showSlide(currentSlide + 1);
+        } else if (e.key === 'ArrowLeft' || e.key === 'PageUp') {
+            showSlide(currentSlide - 1);
+        } else if (e.key >= '1' && e.key <= '9') {
+            showSlide(parseInt(e.key, 10));
+        } else if (e.key === '0') {
+            showSlide(10);
+        } else if (e.key === '-' || e.key === 'a' || e.key === 'A') {
+            showSlide(11);
+        } else if (e.key === 'f' || e.key === 'F') {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen().catch(err => {});
+            } else {
+                document.exitFullscreen();
+            }
+        }
+    });
+</script>
+
+</body>
+</html>
