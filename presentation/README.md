@@ -5,7 +5,9 @@
 | `slides.html` | **The deck.** Open in a browser, press `F` for fullscreen. Arrow keys or click to navigate. |
 | `slides.pdf` | Exported deck, 17 pages, 16:9. Regenerate with the command below. |
 | `slides_draft.html` / `slides_draft.pdf` | The original draft, kept for reference. Not the deck to present. |
-| `figures/` | Figures recovered from the draft PDF. `pipeline.jpg` is the one used on slide 9. |
+| `figures/` | `pipeline.jpg` — the architecture figure, recovered from the draft PDF and used on slide 6. |
+| `speech.md` | **The 3-minute script.** Timed per slide, with a lesson reference for each. |
+| `SLIDES_EXPLAINED.md` | What every element and number on each slide means, and the question it invites. |
 
 `slides.html` is **fully self-contained** — the pipeline figure is embedded as a
 data URI, so the single file works from a USB stick with no `figures/` folder
@@ -22,9 +24,9 @@ google-chrome --headless --no-pdf-header-footer \
 
 ## The flow
 
-The deck follows the organisers' five required sections, in their order. A rail
-along the bottom of every slide shows which section you are in and that all five
-are covered.
+The deck follows the organisers' five required sections, in their order. The
+section name is the tag at the top of every slide, so a judge can see which of
+the five they are in.
 
 ### 1 · Problem & framing
 
@@ -97,8 +99,10 @@ empties one of the five required sections.
 - Diagrams instead of paragraphs: ranked-queue diagram, train/test timeline, the
   real fraud burst, bar charts for every comparison, an architecture flow, a
   before/after propagation figure.
-- Keywords highlighted in flame orange (light slides) or sky blue (dark slides).
-  One highlight per slide, never more.
+- White background throughout; emphasis carried by colour, not by dark panels.
+  Flame orange for the key phrase, deep sky blue for secondary emphasis. One
+  highlight per slide, never more.
+- Only the page number in the footer — nothing competing with the content.
 
 ## Claims removed from the draft
 
@@ -125,7 +129,7 @@ not a claim about the artifact.
 
 ## The pipeline figure
 
-Slide 9 uses the draft's own architecture blueprint (`figures/pipeline.jpg`),
+Slide 6 uses the draft's own architecture blueprint (`figures/pipeline.jpg`),
 recovered from the draft PDF since the source `figures/` folder was missing. Two
 edits before use:
 
