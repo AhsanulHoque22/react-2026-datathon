@@ -18,10 +18,10 @@ you answer the follow-up.
 | 4 · The burst | 20s | 0:46 | 47 |
 | 5 · Features | 16s | 1:02 | 40 |
 | 6 · Architecture | 22s | 1:24 | 51 |
-| 7 · Propagation | 16s | 1:40 | 39 |
-| 8 · The deletion | 22s | 2:02 | 50 |
-| 9 · Noise floor | 12s | 2:14 | 28 |
-| 10 · Regime change | 12s | 2:26 | 29 |
+| 7 · Regime change | 12s | 1:36 | 29 |
+| 8 · Propagation | 16s | 1:52 | 39 |
+| 9 · The deletion | 22s | 2:14 | 50 |
+| 10 · Noise floor | 12s | 2:26 | 28 |
 | 11 · Results | 18s | 2:44 | 36 |
 | 12 · Close | 12s | 2:56 | 35 |
 
@@ -105,7 +105,21 @@ four when pointing at the screen.
 
 ---
 
-## Slide 7 · Propagation — 16s
+## Slide 7 · Regime change — 12s
+
+> "In July the fraud signature **changed** — customer signal halved, device
+> velocity doubled. That's why we train a second model on recent data and give it
+> the **bigger vote**."
+
+**Lesson 5** for what the signal-decay numbers mean, **Lesson 8 Stage 3** for the
+two-advisor framing.
+
+The two rejected fixes are on the slide. If you have a spare second, add:
+*"and yes, we tried dropping the dead features — it made things worse."*
+
+---
+
+## Slide 8 · Propagation — 16s
 
 > "Fraud clusters. If a transaction is fraud, its neighbour on the same device is
 > nearly **four times** likelier to be fraud too. So each score becomes half its
@@ -117,7 +131,7 @@ the phrase that starts that defence.
 
 ---
 
-## Slide 8 · The deletion — 22s
+## Slide 9 · The deletion — 22s
 
 > "Our biggest gain was **deleting one line**. Class weighting — the standard fix
 > for imbalance. But we never decide, we order a queue, and weighting made the
@@ -133,7 +147,7 @@ being alternatives. They aren't — ranking is the task, weighting was a switch.
 
 ---
 
-## Slide 9 · Noise floor — 12s
+## Slide 10 · Noise floor — 12s
 
 > "Then we measured our **own noise**. Re-running the same model with a different
 > seed moved the score by point-zero-zero-two. Seven earlier experiments had all
@@ -142,20 +156,6 @@ being alternatives. They aren't — ranking is the task, weighting was a switch.
 **Lesson 10** — the bathroom scale. This is the slide most likely to earn a
 follow-up question, and Lesson 10 also explains the notebook's 0.5341 vs 0.5359
 reproduction gap using this same number.
-
----
-
-## Slide 10 · Regime change — 12s
-
-> "In July the fraud signature **changed** — customer signal halved, device
-> velocity doubled. That's why we train a second model on recent data and give it
-> the **bigger vote**."
-
-**Lesson 5** for what the signal-decay numbers mean, **Lesson 8 Stage 3** for the
-two-advisor framing.
-
-The two rejected fixes are on the slide. If you have a spare second, add:
-*"and yes, we tried dropping the dead features — it made things worse."*
 
 ---
 
@@ -184,15 +184,16 @@ cutoff, not after.
 
 ---
 
+
 ## If you are running long
 
 Cut in this order. Each cut leaves its section still populated:
 
 1. **Slide 3** — fold the gap into slide 2: *"…and the test period starts where our data ends."*
-2. **Slide 7** — the propagation step is already visible in the slide 6 figure
-3. **Slide 9** — painful, but the noise floor survives in Q&A
+2. **Slide 8** — the propagation step is already visible in the slide 6 figure
+3. **Slide 10** — painful, but the noise floor survives in Q&A
 
-**Never cut 4, 8 or 11.** Slide 4 is the required qualitative example, slide 8 is
+**Never cut 4, 9 or 11.** Slide 4 is the required qualitative example, slide 9 is
 your strongest finding, slide 11 is the result.
 
 ## Saying the numbers

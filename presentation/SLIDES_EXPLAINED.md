@@ -176,7 +176,39 @@ attributes. 12% is where measurement put the benefit peak.
 
 ---
 
-# 7 · Fraud has siblings
+# 7 · Fraud changed shape in July. Here is what we did about it.
+
+**On screen:** a three-cell diagnosis strip, a bordered "our fix" panel with a
+48/52 split bar, two "tested and rejected" cards.
+
+| Element | Meaning |
+|---|---|
+| **0.41 → 0.24** | Univariate AP of `cust_amt_robust_z` — "is this amount odd for this person?" — before and after July. Halved |
+| **0.095 → 0.172** | Univariate AP of `dev_amtsum_6h` — device volume in six hours. Doubled |
+| **1.5 – 1.9%** | Fraud rate, unchanged all year |
+| The 48/52 bar | The fix: a second model on the last 90 days, given the bigger vote |
+| **−0.0010** | Cost of dropping the decayed features — the obvious fix, tested, worse |
+| **0.5449 → 0.5308** | Recency weighting at none / 60d / 30d / 14d / 7d half-lives. Monotonic loss |
+
+**Why it exists:** it justifies the two horizons on slide 6, and it shows you
+diagnosed the data rather than guessing.
+
+**The sentence underneath it all:** fraud did not get *rarer*, it got
+*different*. Old fraud was a transaction unusual for its customer. New fraud is
+volume pushed through a device.
+
+**Why dropping the dead features failed:** 0.24 is still much bigger than 0.172.
+The decayed signal remained the strongest thing in the feature set, and nothing
+stronger was hiding behind it.
+
+**Why recency weighting failed:** down-weighting old rows does not make the model
+younger. It discards signal while the staleness remains.
+
+**Read:** Lesson 5 (what the signal-decay numbers mean) · Lesson 8 Stage 3.
+
+---
+
+# 8 · Fraud has siblings
 
 **On screen:** three lift bars, the propagation rule as a visual, a before/after
 diagram of five scores.
@@ -211,7 +243,7 @@ pipeline at 0.55368 alongside.
 
 ---
 
-# 8 · Our biggest gain was deleting one line
+# 9 · Our biggest gain was deleting one line
 
 **On screen:** four bars showing the class-weight sweep, a "why it hurt" card, the
 leaderboard gain, a closing note.
@@ -245,7 +277,7 @@ weighting are not alternatives — ranking is the task, weighting was a switch).
 
 ---
 
-# 9 · Seven experiments. All of them noise.
+# 10 · Seven experiments. All of them noise.
 
 **On screen:** the bathroom-scale analogy, the noise floor as a stat block, the
 acceptance rule, four rejected results as bars.
@@ -273,38 +305,6 @@ says 0.5359; the recorded run printed 0.5341. The gap is **0.0018 — inside the
 0.0020 floor we measured**. Single-seed variation on different hardware. The
 notebook reproduces the method exactly and the score to within our own measured
 precision.
-
----
-
-# 10 · Fraud changed shape in July. Here is what we did about it.
-
-**On screen:** a three-cell diagnosis strip, a bordered "our fix" panel with a
-48/52 split bar, two "tested and rejected" cards.
-
-| Element | Meaning |
-|---|---|
-| **0.41 → 0.24** | Univariate AP of `cust_amt_robust_z` — "is this amount odd for this person?" — before and after July. Halved |
-| **0.095 → 0.172** | Univariate AP of `dev_amtsum_6h` — device volume in six hours. Doubled |
-| **1.5 – 1.9%** | Fraud rate, unchanged all year |
-| The 48/52 bar | The fix: a second model on the last 90 days, given the bigger vote |
-| **−0.0010** | Cost of dropping the decayed features — the obvious fix, tested, worse |
-| **0.5449 → 0.5308** | Recency weighting at none / 60d / 30d / 14d / 7d half-lives. Monotonic loss |
-
-**Why it exists:** it justifies the two horizons on slide 6, and it shows you
-diagnosed the data rather than guessing.
-
-**The sentence underneath it all:** fraud did not get *rarer*, it got
-*different*. Old fraud was a transaction unusual for its customer. New fraud is
-volume pushed through a device.
-
-**Why dropping the dead features failed:** 0.24 is still much bigger than 0.172.
-The decayed signal remained the strongest thing in the feature set, and nothing
-stronger was hiding behind it.
-
-**Why recency weighting failed:** down-weighting old rows does not make the model
-younger. It discards signal while the staleness remains.
-
-**Read:** Lesson 5 (what the signal-decay numbers mean) · Lesson 8 Stage 3.
 
 ---
 

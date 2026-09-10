@@ -42,15 +42,15 @@ the five they are in.
 |---|---|---|
 | 5 | We described behaviour, not transactions | 13 columns → 160 features, and the 0.166 → 0.509 jump |
 | 6 | The whole solution, in one pass | The pipeline figure, full width, with the exact blend weights beneath it |
-| 7 | Fraud has siblings | The propagation step, the 3.87×/2.63× clustering lift, before/after diagram |
+| 7 | Fraud changed shape in July | The regime change, the 48/52 fix, and the two obvious fixes we tested and rejected |
+| 8 | Fraud has siblings | The propagation step, the 3.87×/2.63× clustering lift, before/after diagram |
 
 ### 3 · Key technical decisions
 
 | # | Slide | Carries |
 |---|---|---|
-| 8 | Our biggest gain was deleting one line | Removing class weighting, the monotonic table, +0.026 |
-| 9 | Seven experiments. All of them noise. | The 0.0020 noise floor and the four positive results rejected because of it |
-| 10 | In July, fraud changed shape | The regime change — why the architecture has two horizons |
+| 9 | Our biggest gain was deleting one line | Removing class weighting, the monotonic table, +0.026 |
+| 10 | Seven experiments. All of them noise. | The 0.0020 noise floor and the four positive results rejected because of it |
 
 ### 4 · Results & leaderboard performance
 
@@ -67,9 +67,13 @@ the five they are in.
 Slides 13–17 are appendix, explicitly marked as outside the timed talk.
 
 **Why the architecture comes before the decisions.** The brief says to lead with
-the conclusion, then the evidence. Slides 5–7 show *what we built*; slides 8–10
-justify *why each piece is there*. Slide 6 carries a one-line "why two horizons"
-answer so it stands alone, and slide 10 then gives the measurement behind it.
+the conclusion, then the evidence. Slides 5–8 show *what we built*; slides 9–10
+justify the two decisions that are not visible in the architecture itself.
+
+**Why the regime change sits at 7.** It explains the two horizons the audience has
+just seen on slide 6, so it reads as the reason for a choice rather than as a
+standalone finding. It is tagged Approach rather than Key decisions to keep the
+five sections contiguous.
 
 ## Cutting to 3 minutes
 
@@ -80,11 +84,11 @@ timer.**
 If you run long, cut in this order:
 
 1. **Slide 3** (the gap) — fold it into slide 2 in one sentence
-2. **Slide 7** (propagation detail) — the step is already visible on slide 6
-3. **Slide 9** (noise floor) — painful to lose, but it survives in Q&A
+2. **Slide 8** (propagation detail) — the step is already visible on slide 6
+3. **Slide 10** (noise floor) — painful to lose, but it survives in Q&A
 
-Never cut slides 4, 8 or 11. Slide 4 is the qualitative example the brief asks
-for, slide 8 is the strongest finding, and slide 11 is the result — the brief
+Never cut slides 4, 9 or 11. Slide 4 is the qualitative example the brief asks
+for, slide 9 is the strongest finding, and slide 11 is the result — the brief
 says explicitly to land the result before the cutoff. Cutting any of them also
 empties one of the five required sections.
 

@@ -399,7 +399,57 @@ table.ledger tr.hero td{background:var(--flame-soft)}
   <div class="foot"><span class="num">06</span></div>
 </section>
 
-<!-- ===== 07 PROPAGATION ===== -->
+<!-- ===== 07 REGIME CHANGE ===== -->
+<section class="slide">
+  <div class="tag">Approach / architecture</div>
+  <h1 class="sm" style="font-size:56px;max-width:none">Fraud changed shape in July.<br>Here is <em class="k">what we did about it</em>.</h1>
+  <div class="body">
+    <div class="col" style="width:100%;justify-content:center;gap:16px">
+
+      <!-- the diagnosis, compressed to one strip -->
+      <div class="diag">
+        <div><span class="dh">Customer-amount signal</span>
+          <span class="dv down">0.41 → 0.24</span><span class="ds">halved</span></div>
+        <div><span class="dh">Device-velocity signal</span>
+          <span class="dv up">0.095 → 0.172</span><span class="ds">doubled</span></div>
+        <div><span class="dh">Fraud rate</span>
+          <span class="dv">1.5 – 1.9%</span><span class="ds">unchanged all year</span></div>
+      </div>
+      <div class="note" style="text-align:center;font-size:24px">
+        Fraud didn't get <b style="color:var(--ink)">rarer</b>. It got <b style="color:var(--ink)">different</b> —
+        and the test window sits <b style="color:var(--ink)">entirely after</b> the change.
+      </div>
+
+      <!-- the fix, made the dominant object -->
+      <div class="fix">
+        <div class="fix-lab">Our fix</div>
+        <div class="fix-main">A <em class="k">second model</em> trained only on the last 90 days —
+          given the <em class="k">bigger vote</em>.</div>
+        <div class="fix-bar">
+          <div class="seg full"><b>48%</b><span>full history · 6.5 months</span></div>
+          <div class="seg spec"><b>52%</b><span>last 90 days only</span></div>
+        </div>
+        <div class="fix-note">The less experienced model wins the argument, because everything it
+          knows is <b>current</b>.</div>
+      </div>
+
+      <!-- the two obvious fixes we tested and rejected -->
+      <div class="row" style="gap:20px">
+        <div class="card"><h3 style="color:var(--ink);font-size:25px">Tested: drop the decayed features
+          <span class="verdict">−0.0010</span></h3>
+          <p style="font-size:21px">The obvious move, and it made things worse — <b style="color:var(--ink)">0.24
+            still beats 0.172</b>. The faded signal was still the strongest thing we had.</p></div>
+        <div class="card"><h3 style="color:var(--ink);font-size:25px">Tested: weight recent rows
+          <span class="verdict">worse at every setting</span></h3>
+          <p style="font-size:21px">0.5449 → 0.5401 → 0.5361 → 0.5308. Down-weighting old rows doesn't
+            make the model <b style="color:var(--ink)">younger</b>, it just discards signal.</p></div>
+      </div>
+    </div>
+  </div>
+  <div class="foot"><span class="num">07</span></div>
+</section>
+
+<!-- ===== 08 PROPAGATION ===== -->
 <section class="slide">
   <div class="tag">Approach / architecture</div>
   <h1>Fraud has <em class="k">siblings</em>.</h1>
@@ -466,10 +516,10 @@ table.ledger tr.hero td{background:var(--flame-soft)}
       </div>
     </div>
   </div>
-  <div class="foot"><span class="num">07</span></div>
+  <div class="foot"><span class="num">08</span></div>
 </section>
 
-<!-- ===== 08 THE DELETION ===== -->
+<!-- ===== 09 THE DELETION ===== -->
 <section class="slide">
   <div class="tag">Key technical decisions</div>
   <h1>Our biggest gain was<br><em class="k">deleting one line</em>.</h1>
@@ -503,10 +553,10 @@ table.ledger tr.hero td{background:var(--flame-soft)}
       </div>
     </div>
   </div>
-  <div class="foot"><span class="num">08</span></div>
+  <div class="foot"><span class="num">09</span></div>
 </section>
 
-<!-- ===== 09 NOISE FLOOR ===== -->
+<!-- ===== 10 NOISE FLOOR ===== -->
 <section class="slide">
   <div class="tag">Key technical decisions</div>
   <h1>Seven experiments.<br><em class="k">All of them noise.</em></h1>
@@ -543,56 +593,6 @@ table.ledger tr.hero td{background:var(--flame-soft)}
           <div class="barrow"><div class="lab" style="width:250px;font-size:23px">Drift normalisation</div>
             <div class="track"><div class="fill mut" style="width:5%"></div></div><div class="out">+0.0001</div></div>
         </div>
-      </div>
-    </div>
-  </div>
-  <div class="foot"><span class="num">09</span></div>
-</section>
-
-<!-- ===== 10 REGIME CHANGE ===== -->
-<section class="slide">
-  <div class="tag">Key technical decisions</div>
-  <h1 class="sm" style="font-size:56px;max-width:none">Fraud changed shape in July.<br>Here is <em class="k">what we did about it</em>.</h1>
-  <div class="body">
-    <div class="col" style="width:100%;justify-content:center;gap:16px">
-
-      <!-- the diagnosis, compressed to one strip -->
-      <div class="diag">
-        <div><span class="dh">Customer-amount signal</span>
-          <span class="dv down">0.41 → 0.24</span><span class="ds">halved</span></div>
-        <div><span class="dh">Device-velocity signal</span>
-          <span class="dv up">0.095 → 0.172</span><span class="ds">doubled</span></div>
-        <div><span class="dh">Fraud rate</span>
-          <span class="dv">1.5 – 1.9%</span><span class="ds">unchanged all year</span></div>
-      </div>
-      <div class="note" style="text-align:center;font-size:24px">
-        Fraud didn't get <b style="color:var(--ink)">rarer</b>. It got <b style="color:var(--ink)">different</b> —
-        and the test window sits <b style="color:var(--ink)">entirely after</b> the change.
-      </div>
-
-      <!-- the fix, made the dominant object -->
-      <div class="fix">
-        <div class="fix-lab">Our fix</div>
-        <div class="fix-main">A <em class="k">second model</em> trained only on the last 90 days —
-          given the <em class="k">bigger vote</em>.</div>
-        <div class="fix-bar">
-          <div class="seg full"><b>48%</b><span>full history · 6.5 months</span></div>
-          <div class="seg spec"><b>52%</b><span>last 90 days only</span></div>
-        </div>
-        <div class="fix-note">The less experienced model wins the argument, because everything it
-          knows is <b>current</b>.</div>
-      </div>
-
-      <!-- the two obvious fixes we tested and rejected -->
-      <div class="row" style="gap:20px">
-        <div class="card"><h3 style="color:var(--ink);font-size:25px">Tested: drop the decayed features
-          <span class="verdict">−0.0010</span></h3>
-          <p style="font-size:21px">The obvious move, and it made things worse — <b style="color:var(--ink)">0.24
-            still beats 0.172</b>. The faded signal was still the strongest thing we had.</p></div>
-        <div class="card"><h3 style="color:var(--ink);font-size:25px">Tested: weight recent rows
-          <span class="verdict">worse at every setting</span></h3>
-          <p style="font-size:21px">0.5449 → 0.5401 → 0.5361 → 0.5308. Down-weighting old rows doesn't
-            make the model <b style="color:var(--ink)">younger</b>, it just discards signal.</p></div>
       </div>
     </div>
   </div>
